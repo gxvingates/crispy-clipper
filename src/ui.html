@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crispy Clipper</title>
+<style>
+:root {
+  --bg: #111115; --panel: #18181d; --panel2: #202027; --line: #2a2a33; --text: #ececf1; --dim: #9a9aa8;
+  --accent: #ff4b4b; --accent2: #ff7a59; --ok: #3ccf8e; --radius: 10px;
+  font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; user-select: none; }
+button, select, input { font: inherit; color: inherit; }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 13px; cursor: pointer; white-space: nowrap; }
+button:hover { border-color: #3d3d49; background: #26262e; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary:hover { background: #ff5f5f; }
+button.ghost { background: transparent; border-color: transparent; color: var(--dim); }
+button.ghost:hover { color: var(--text); background: var(--panel2); }
+button:disabled { opacity: .5; cursor: default; }
+input[type=text], input[type=number], select, textarea {
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; outline: none; }
+input:focus, select:focus, textarea:focus { border-color: #4a4a58; }
+.hidden { display: none !important; }
+
+header { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16px; letter-spacing: .2px; }
+.logo i { width: 20px; height: 20px; border-radius: 6px; background: #1e1e26; display: grid; place-items: center; }
+.logo i::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+.tabs { display: flex; gap: 4px; margin-left: 14px; }
+.tabs button { background: transparent; border: none; color: var(--dim); padding: 7px 12px; }
+.tabs button.on { color: var(--text); background: var(--panel2); }
+.status { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+.dot.on { background: var(--ok); box-shadow: 0 0 8px #3ccf8e88; }
+
+main { flex: 1; display: flex; min-height: 0; }
+aside { width: 210px; border-right: 1px solid var(--line); padding: 14px 10px; overflow-y: auto; flex-shrink: 0; }
+aside h4 { margin: 4px 10px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); }
+aside button { display: flex; width: 100%; justify-content: space-between; background: transparent; border: none; padding: 7px 10px; color: var(--dim); text-align: left; }
+aside button span:first-child { overflow: hidden; text-overflow: ellipsis; }
+aside button.on, aside button:hover { background: var(--panel2); color: var(--text); }
+aside button small { color: var(--dim); }
+
+#library { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.toolbar { display: flex; gap: 8px; padding: 12px 18px; align-items: center; }
+.toolbar input { flex: 1; max-width: 320px; }
+.chips { display: flex; gap: 4px; }
+.chips button { border-radius: 99px; padding: 5px 12px; font-size: 13px; }
+.chips button.on { background: #ffffff14; border-color: #ffffff30; }
+#grid { flex: 1; overflow-y: auto; padding: 4px 18px 24px; }
+.day { margin: 14px 2px 10px; font-weight: 600; color: var(--dim); font-size: 13px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; cursor: pointer; transition: transform .12s, border-color .12s; position: relative; }
+.card:hover { border-color: #3d3d49; transform: translateY(-2px); }
+.thumb { aspect-ratio: 16/9; background: #0b0b0e center/cover no-repeat; position: relative; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.badge { position: absolute; right: 7px; bottom: 7px; background: #000b; padding: 1px 7px; border-radius: 5px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.kind { position: absolute; left: 7px; top: 7px; background: var(--accent); padding: 1px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; }
+.kind.screenshot { background: #4b7bff; }
+.card .meta { padding: 9px 11px 10px; }
+.card .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .sub { color: var(--dim); font-size: 12px; display: flex; justify-content: space-between; margin-top: 2px; }
+.card .acts { position: absolute; top: 6px; right: 6px; display: none; gap: 4px; }
+.card:hover .acts { display: flex; }
+.card .acts button { padding: 4px 8px; font-size: 12px; background: #000c; border-color: #ffffff22; }
+.empty { text-align: center; color: var(--dim); margin-top: 18vh; }
+.empty b { color: var(--text); font-size: 18px; display: block; margin-bottom: 6px; }
+kbd { background: var(--panel2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 0 6px; font: 12px Consolas, monospace; color: var(--text); }
+
+#editor { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; z-index: 10; }
+#editor .top { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+#editor .top input { flex: 1; max-width: 520px; background: transparent; border-color: transparent; font-weight: 600; font-size: 15px; }
+#editor .top input:hover, #editor .top input:focus { background: var(--panel2); border-color: var(--line); }
+#editor .stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #000; }
+#editor video, #editor .stage img { max-width: 100%; max-height: 100%; outline: none; }
+.trimbar { padding: 14px 20px 16px; background: var(--panel); border-top: 1px solid var(--line); }
+.timeline { position: relative; height: 46px; background: #0b0b0e; border-radius: 8px; cursor: pointer; margin-bottom: 12px; overflow: hidden; }
+.timeline .sel { position: absolute; top: 0; bottom: 0; background: #ff4b4b22; border: 2px solid var(--accent); border-radius: 8px; }
+.timeline .handle { position: absolute; top: 0; bottom: 0; width: 14px; margin-left: -7px; cursor: ew-resize; z-index: 2; }
+.timeline .handle::after { content: ""; position: absolute; left: 4px; top: 10px; bottom: 10px; width: 6px; border-radius: 3px; background: var(--accent); }
+.timeline .head { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; pointer-events: none; z-index: 1; }
+.timeline .shade { position: absolute; top: 0; bottom: 0; background: #000a; pointer-events: none; }
+.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.controls .times { font-variant-numeric: tabular-nums; color: var(--dim); margin-right: 8px; min-width: 210px; }
+.controls .sp { flex: 1; }
+label.check { display: flex; align-items: center; gap: 6px; color: var(--dim); cursor: pointer; }
+
+#settings { flex: 1; overflow-y: auto; padding: 22px 28px 60px; }
+.sform { max-width: 760px; }
+.sform section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 18px; margin-bottom: 16px; }
+.sform h3 { margin: 12px 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); }
+.row { display: flex; align-items: center; gap: 16px; padding: 11px 0; border-top: 1px solid var(--line); }
+.row:first-of-type { border-top: none; }
+.row .lbl { flex: 1; }
+.row .lbl small { display: block; color: var(--dim); font-size: 12px; }
+.row select, .row input[type=text], .row input[type=number] { width: 220px; }
+.row input[type=range] { width: 220px; accent-color: var(--accent); }
+.row textarea { width: 340px; height: 64px; resize: vertical; font: 12px Consolas, monospace; }
+.hotkey { width: 160px !important; text-align: center; cursor: pointer; caret-color: transparent; }
+.hotkey.listening { border-color: var(--accent) !important; color: var(--accent); }
+.switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; background: #3a3a45; border-radius: 99px; cursor: pointer; transition: .15s; }
+.switch span::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .15s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::before { transform: translateX(18px); }
+.savebar { position: sticky; bottom: -60px; display: flex; gap: 10px; align-items: center; padding: 14px 0; background: linear-gradient(transparent, var(--bg) 30%); }
+.note { color: var(--dim); font-size: 12px; }
+
+#toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px); background: #26262e; border: 1px solid var(--line); padding: 10px 16px; border-radius: 9px; opacity: 0; transition: .2s; pointer-events: none; z-index: 50; max-width: 70vw; }
+#toast.show { opacity: 1; transform: translateX(-50%); }
+#toast.err { border-color: #ff4b4b88; }
+.busy { position: fixed; inset: 0; background: #0008; display: grid; place-items: center; z-index: 40; }
+.busy div { background: var(--panel); border: 1px solid var(--line); padding: 18px 24px; border-radius: 12px; }
+::-webkit-scrollbar { width: 10px; } ::-webkit-scrollbar-thumb { background: #2c2c35; border-radius: 5px; border: 2px solid var(--bg); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><i></i>Crispy Clipper</div>
+  <div class="tabs">
+    <button id="tabLib" class="on" onclick="showTab('library')">Library</button>
+    <button id="tabSet" onclick="showTab('settings')">Settings</button>
+  </div>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">…</span>
+    <button id="startBtn" class="hidden" onclick="startRecorder()">Start</button></div>
+</header>
+
+<main id="libMain">
+  <aside><h4>Games</h4><div id="games"></div></aside>
+  <section id="library">
+    <div class="toolbar">
+      <input type="text" id="search" placeholder="Search clips…" oninput="render()">
+      <div class="chips" id="kinds">
+        <button class="on" data-k="">All</button><button data-k="clip">Clips</button>
+        <button data-k="recording">Recordings</button><button data-k="screenshot">Screenshots</button>
+      </div>
+      <span style="flex:1"></span>
+      <button class="ghost" onclick="call('openFolder')">Open folder</button>
+      <button class="ghost" onclick="load()">Refresh</button>
+    </div>
+    <div id="grid"></div>
+  </section>
+</main>
+
+<main id="setMain" class="hidden"><div id="settings"><div class="sform" id="sform"></div></div></main>
+
+<div id="editor" class="hidden">
+  <div class="top">
+    <button onclick="closeEditor()">← Back</button>
+    <input type="text" id="edName" spellcheck="false" onkeydown="if(event.key==='Enter')this.blur()" onchange="renameCurrent()">
+    <span style="flex:1"></span>
+    <button class="ghost" onclick="copyCurrent()" title="Paste straight into Discord">Copy</button>
+    <button class="ghost" onclick="call('reveal',{path:cur.path})">Show in folder</button>
+    <button class="ghost" onclick="call('openExternal',{path:cur.path})">Open in player</button>
+    <select id="compressSel" onchange="compressCurrent(this)" title="Make a smaller copy">
+      <option value="">Compress…</option><option value="10">10 MB (Discord)</option><option value="25">25 MB</option><option value="50">50 MB</option><option value="100">100 MB</option>
+    </select>
+    <button class="ghost" style="color:#ff7070" onclick="deleteCurrent()">Delete</button>
+  </div>
+  <div class="stage" id="stage"></div>
+  <div class="trimbar" id="trimbar">
+    <div class="timeline" id="tl">
+      <div class="shade" id="shL"></div><div class="shade" id="shR"></div>
+      <div class="sel" id="sel"></div>
+      <div class="handle" id="hIn"></div><div class="handle" id="hOut"></div>
+      <div class="head" id="head"></div>
+    </div>
+    <div class="controls">
+      <button onclick="togglePlay()" id="playBtn" style="min-width:74px">Play</button>
+      <span class="times" id="times"></span>
+      <button class="ghost" onclick="setIn()" title="I">Set start <kbd>I</kbd></button>
+      <button class="ghost" onclick="setOut()" title="O">Set end <kbd>O</kbd></button>
+      <button class="ghost" onclick="resetTrim()">Reset</button>
+      <span class="sp"></span>
+      <label class="check" title="Cuts on the exact frame (re-encodes, slower). Off = instant, may start up to 1s early."><input type="checkbox" id="precise"> Exact cut</label>
+      <button onclick="doTrim(false)">Save as new clip</button>
+      <button class="primary" onclick="doTrim(true)">Trim clip</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="busy" class="busy hidden"><div id="busyText">Working…</div></div>
+
+<script>
+// ---------- bridge to Rust ----------
+let seq = 0; const pending = {};
+window.__reply = (id, res) => { const p = pending[id]; if (!p) return; delete pending[id]; res.error !== undefined ? p.reject(res.error) : p.resolve(res.ok); };
+function call(cmd, args = {}) { return new Promise((resolve, reject) => { const id = ++seq; pending[id] = { resolve, reject }; window.ipc.postMessage(JSON.stringify({ id, cmd, args })); }); }
+const media = p => '/media?path=' + encodeURIComponent(p);
+const thumb = (p, m) => '/thumb?path=' + encodeURIComponent(p) + '&m=' + m;
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function toast(msg, err) { const t = $('toast'); t.textContent = msg; t.className = 'show' + (err ? ' err' : ''); clearTimeout(t._h); t._h = setTimeout(() => t.className = '', err ? 5000 : 2600); }
+async function busy(text, fn) { $('busyText').textContent = text; $('busy').classList.remove('hidden'); try { return await fn(); } finally { $('busy').classList.add('hidden'); } }
+const fmtTime = s => { s = Math.max(0, s || 0); const m = Math.floor(s / 60), r = s - m * 60; return m + ':' + r.toFixed(1).padStart(4, '0'); };
+const fmtDur = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, r = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(r).padStart(2, '0'); };
+const fmtSize = b => b > 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b > 1e6 ? (b / 1e6).toFixed(0) + ' MB' : (b / 1e3).toFixed(0) + ' KB';
+
+// ---------- library ----------
+let items = [], game = '', kind = '', cfg = null, status = null;
+async function load() {
+  try {
+    const r = await call('list'); const sig = JSON.stringify(r.items);
+    if (sig !== load.sig) { load.sig = sig; items = r.items; render(); }
+  } catch (e) { toast(e, true); }
+}
+function render() {
+  const games = {}; items.forEach(i => games[i.game] = (games[i.game] || 0) + 1);
+  const names = Object.keys(games).sort((a, b) => a.localeCompare(b));
+  $('games').innerHTML = [['', 'All games', items.length], ...names.map(n => [n, n, games[n]])]
+    .map(([k, label, n]) => `<button class="${k === game ? 'on' : ''}" data-g="${esc(k)}"><span>${esc(label)}</span><small>${n}</small></button>`).join('');
+  const q = $('search').value.toLowerCase();
+  const list = items.filter(i => (!game || i.game === game) && (!kind || i.kind === kind) && (!q || (i.name + ' ' + i.game).toLowerCase().includes(q)));
+  if (!list.length) {
+    $('grid').innerHTML = items.length ? '<div class="empty"><b>Nothing matches</b>Try another filter.</div>'
+      : `<div class="empty"><b>No clips yet</b>Start a game and press <kbd>${esc(cfg?.clip_hotkey || 'F8')}</kbd> to save the last ${cfg?.clip_seconds || 30} seconds.<br><br>
+         <kbd>${esc(cfg?.record_hotkey || 'F9')}</kbd> starts/stops a full recording · <kbd>${esc(cfg?.screenshot_hotkey || 'F10')}</kbd> takes a screenshot</div>`;
+    return;
+  }
+  const groups = []; let last = null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  for (const i of list) {
+    const d = new Date(i.mtime); d.setHours(0, 0, 0, 0);
+    const diff = Math.round((today - d) / 864e5);
+    const label = diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+    if (label !== last) { groups.push({ label, items: [] }); last = label; }
+    groups[groups.length - 1].items.push(i);
+  }
+  $('grid').innerHTML = groups.map(g => `<div class="day">${esc(g.label)}</div><div class="cards">${g.items.map(card).join('')}</div>`).join('');
+}
+function card(i) {
+  const idx = items.indexOf(i);
+  const t = new Date(i.mtime).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `<div class="card" data-i="${idx}">
+    <div class="thumb"><img loading="lazy" src="${thumb(i.path, i.mtime)}" onerror="this.style.visibility='hidden'">
+      ${i.kind !== 'clip' ? `<span class="kind ${i.kind}">${i.kind === 'recording' ? 'REC' : 'IMG'}</span>` : ''}
+      ${i.duration ? `<span class="badge">${fmtDur(i.duration)}</span>` : ''}</div>
+    <div class="acts"><button data-a="copy" title="Copy file (paste into Discord)">Copy</button><button data-a="reveal">Folder</button><button data-a="del">Delete</button></div>
+    <div class="meta"><div class="title">${esc(i.name)}</div><div class="sub"><span>${esc(i.game)} · ${t}</span><span>${fmtSize(i.size)}</span></div></div></div>`;
+}
+$('games').onclick = e => { const b = e.target.closest('button'); if (b) { game = b.dataset.g; render(); } };
+$('kinds').onclick = e => { const b = e.target.closest('button'); if (!b) return; kind = b.dataset.k; [...$('kinds').children].forEach(c => c.classList.toggle('on', c === b)); render(); };
+$('grid').onclick = async e => {
+  const c = e.target.closest('.card'); if (!c) return;
+  const i = items[+c.dataset.i]; const a = e.target.closest('button')?.dataset.a;
+  if (a === 'copy') { await copyFile(i.path); }
+  else if (a === 'reveal') { call('reveal', { path: i.path }); }
+  else if (a === 'del') { if (confirm(`Move "${i.name}" to the Recycle Bin?`)) { await call('delete', { paths: [i.path] }).catch(e => toast(e, true)); load(); } }
+  else openEditor(i);
+};
+async function copyFile(path) { try { await call('copyFile', { path }); toast('Copied. Paste it into Discord or a folder with Ctrl+V'); } catch (e) { toast(e, true); } }
+
+// ---------- editor / trimmer ----------
+let cur = null, vid = null, tIn = 0, tOut = 0;
+function openEditor(i) {
+  cur = i; $('edName').value = i.name; $('compressSel').value = '';
+  $('editor').classList.remove('hidden');
+  const isVid = i.kind !== 'screenshot';
+  $('trimbar').classList.toggle('hidden', !isVid); $('compressSel').classList.toggle('hidden', !isVid);
+  if (!isVid) { $('stage').innerHTML = `<img src="${media(i.path)}">`; vid = null; return; }
+  $('stage').innerHTML = `<video controls autoplay src="${media(i.path)}#t=0"></video>`;
+  vid = $('stage').querySelector('video');
+  vid.volume = +(localStorage.vol ?? 0.8);
+  vid.onvolumechange = () => localStorage.vol = vid.volume;
+  vid.onloadedmetadata = () => { tIn = 0; tOut = vid.duration; drawTL(); };
+  vid.ontimeupdate = () => { if (!vid.paused && tOut < vid.duration - 0.05 && vid.currentTime >= tOut) { vid.currentTime = tIn; } drawTL(); };
+  vid.onplay = vid.onpause = () => $('playBtn').textContent = vid.paused ? 'Play' : 'Pause';
+}
+function closeEditor() { if (vid) { vid.pause(); vid.removeAttribute('src'); vid.load(); } $('stage').innerHTML = ''; $('editor').classList.add('hidden'); cur = vid = null; }
+function drawTL() {
+  if (!vid || !vid.duration) return; const d = vid.duration, pct = t => (t / d * 100) + '%';
+  $('sel').style.left = pct(tIn); $('sel').style.width = ((tOut - tIn) / d * 100) + '%';
+  $('hIn').style.left = pct(tIn); $('hOut').style.left = pct(tOut); $('head').style.left = pct(vid.currentTime);
+  $('shL').style.cssText = `left:0;width:${pct(tIn)}`; $('shR').style.cssText = `left:${pct(tOut)};right:0`;
+  $('times').textContent = `${fmtTime(vid.currentTime)}  ·  selection ${fmtTime(tIn)} – ${fmtTime(tOut)} (${(tOut - tIn).toFixed(1)}s)`;
+}
+function togglePlay() { if (!vid) return; if (vid.paused) { if (vid.currentTime < tIn || vid.currentTime >= tOut - 0.05) vid.currentTime = tIn; vid.play(); } else vid.pause(); }
+function setIn() { if (!vid) return; tIn = Math.min(vid.currentTime, tOut - 0.2); drawTL(); }
+function setOut() { if (!vid) return; tOut = Math.max(vid.currentTime, tIn + 0.2); drawTL(); }
+function resetTrim() { if (!vid) return; tIn = 0; tOut = vid.duration; drawTL(); }
+(() => {
+  const tl = $('tl'); let drag = null;
+  const timeAt = e => { const r = tl.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (vid?.duration || 0); };
+  tl.onpointerdown = e => {
+    if (!vid?.duration) return; tl.setPointerCapture(e.pointerId);
+    drag = e.target === $('hIn') ? 'in' : e.target === $('hOut') ? 'out' : 'seek';
+    if (drag === 'seek') vid.currentTime = timeAt(e); drawTL();
+  };
+  tl.onpointermove = e => {
+    if (!drag) return; const t = timeAt(e);
+    if (drag === 'in') { tIn = Math.min(t, tOut - 0.2); vid.currentTime = tIn; }
+    else if (drag === 'out') { tOut = Math.max(t, tIn + 0.2); vid.currentTime = tOut; }
+    else vid.currentTime = t;
+    drawTL();
+  };
+  tl.onpointerup = () => drag = null;
+})();
+document.addEventListener('keydown', e => {
+  if ($('editor').classList.contains('hidden') || e.target.tagName === 'INPUT' && e.target.type === 'text') return;
+  if (e.key === 'Escape') closeEditor();
+  else if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'i' || e.key === 'I') setIn();
+  else if (e.key === 'o' || e.key === 'O') setOut();
+  else if (vid && e.key === 'ArrowLeft') vid.currentTime -= e.shiftKey ? 1 / 60 : 2;
+  else if (vid && e.key === 'ArrowRight') vid.currentTime += e.shiftKey ? 1 / 60 : 2;
+});
+async function doTrim(replace) {
+  if (!vid) return;
+  if (tIn < 0.05 && tOut > vid.duration - 0.05) { toast('Drag the red handles to choose the part to keep.'); return; }
+  if (replace && !confirm('Trim this clip? The original goes to the Recycle Bin.')) return;
+  const args = { path: cur.path, start: tIn, end: tOut, precise: $('precise').checked, replace };
+  try {
+    vid.pause(); if (replace) { vid.removeAttribute('src'); vid.load(); }
+    const out = await busy($('precise').checked ? 'Cutting (exact)…' : 'Cutting…', () => call('trim', args));
+    toast(replace ? 'Clip trimmed' : 'Saved as a new clip');
+    await load(); const n = items.find(i => i.path === out); if (n) openEditor(n); else closeEditor();
+  } catch (e) { toast('Trim failed: ' + e, true); if (replace) openEditor(cur); }
+}
+async function renameCurrent() {
+  const name = $('edName').value.trim(); if (!cur || !name || name === cur.name) return;
+  try {
+    if (vid) { vid.pause(); vid.removeAttribute('src'); vid.load(); }
+    const p = await call('rename', { path: cur.path, name }); await load();
+    const n = items.find(i => i.path === p); if (n) openEditor(n); toast('Renamed');
+  } catch (e) { toast(e, true); $('edName').value = cur.name; openEditor(cur); }
+}
+async function deleteCurrent() {
+  if (!confirm(`Move "${cur.name}" to the Recycle Bin?`)) return;
+  const p = cur.path; closeEditor();
+  try { await call('delete', { paths: [p] }); toast('Moved to Recycle Bin'); } catch (e) { toast(e, true); }
+  load();
+}
+function copyCurrent() { copyFile(cur.path); }
+async function compressCurrent(sel) {
+  const mb = +sel.value; sel.value = ''; if (!mb) return;
+  try { const out = await busy(`Making a ${mb} MB copy…`, () => call('compress', { path: cur.path, mb })); await load(); toast(`Saved a ${mb} MB copy`); const n = items.find(i => i.path === out); if (n) openEditor(n); }
+  catch (e) { toast('Compress failed: ' + e, true); }
+}
+
+// ---------- settings ----------
+const F = (key, label, hint, input) => `<div class="row"><div class="lbl">${label}${hint ? `<small>${hint}</small>` : ''}</div>${input(key)}</div>`;
+const sel = opts => k => `<select data-k="${k}">${opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>`;
+const sw = k => `<label class="switch"><input type="checkbox" data-k="${k}"><span></span></label>`;
+const num = (min, max, step = 1) => k => `<input type="number" data-k="${k}" min="${min}" max="${max}" step="${step}">`;
+const range = (min, max, step) => k => `<input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}">`;
+const hk = k => `<input type="text" class="hotkey" data-k="${k}" readonly>`;
+const list = k => `<textarea data-k="${k}" data-list="1" spellcheck="false"></textarea>`;
+function buildSettings() {
+  $('sform').innerHTML = `
+  <section><h3>Capture</h3>
+    ${F('capture_mode', 'When to capture', 'Games only uses no resources while you are not playing', sel([['games', 'Only while gaming'], ['always', 'Always (desktop too)']]))}
+    ${F('clip_seconds', 'Clip length', 'How far back a clip goes', sel([[15, '15 seconds'], [30, '30 seconds'], [45, '45 seconds'], [60, '1 minute'], [90, '90 seconds'], [120, '2 minutes'], [180, '3 minutes'], [300, '5 minutes']]))}
+    ${F('resolution', 'Resolution', 'Downscaling below your screen size uses some CPU unless your FFmpeg has GPU scaling', sel([['native', 'Native (screen size)'], ['1440p', '1440p'], ['1080p', '1080p'], ['720p', '720p']]))}
+    ${F('fps', 'Frame rate', '', sel([[30, '30 fps'], [60, '60 fps'], [120, '120 fps'], [144, '144 fps']]))}
+    ${F('quality', 'Quality', '<span id="qLabel"></span>', range(16, 30, 1))}
+    ${F('max_bitrate_mbps', 'Max bitrate (Mbps)', 'Ceiling for fast motion. <span id="ramEst"></span>', num(5, 200))}
+    ${F('codec', 'Format', 'H.264 plays everywhere. HEVC/AV1 are smaller but need a newer GPU', sel([['h264', 'H.264'], ['hevc', 'HEVC (H.265)'], ['av1', 'AV1']]))}
+    ${F('encoder', 'Encoder', 'Auto picks your GPU (NVIDIA, AMD or Intel), CPU as a last resort', sel([['auto', 'Auto'], ['h264_nvenc', 'NVIDIA H.264'], ['hevc_nvenc', 'NVIDIA HEVC'], ['av1_nvenc', 'NVIDIA AV1'], ['h264_amf', 'AMD H.264'], ['hevc_amf', 'AMD HEVC'], ['av1_amf', 'AMD AV1'], ['h264_qsv', 'Intel H.264'], ['hevc_qsv', 'Intel HEVC'], ['h264_mf', 'Windows (any GPU)'], ['libx264', 'CPU (x264)']]))}
+    ${F('monitor', 'Monitor', '', sel([[-1, 'Where the game is'], [0, 'Monitor 1'], [1, 'Monitor 2'], [2, 'Monitor 3']]))}
+    ${F('show_cursor', 'Show mouse cursor', '', sw)}
+  </section>
+  <section><h3>Audio</h3>
+    ${F('system_audio', 'Game / PC audio', '"Game only" leaves out Discord, music etc. (Windows 10 2004+)', sel([['all', 'Everything I hear'], ['game', 'Game only'], ['off', 'Off']]))}
+    ${F('system_volume', 'PC audio volume', '', range(0, 2, 0.05))}
+    ${F('microphone', 'Record microphone', 'Uses your Windows default mic', sw)}
+    ${F('mic_volume', 'Mic volume', '', range(0, 2, 0.05))}
+  </section>
+  <section><h3>Hotkeys</h3>
+    ${F('clip_hotkey', 'Save clip', 'Click, then press a key combo', hk)}
+    ${F('record_hotkey', 'Start / stop recording', '', hk)}
+    ${F('screenshot_hotkey', 'Screenshot', '', hk)}
+  </section>
+  <section><h3>Storage & app</h3>
+    <div class="row"><div class="lbl">Clips folder<small id="outShow"></small></div><button onclick="pickFolder()">Change…</button><button class="ghost" onclick="cfg.output_dir='';fill()">Default</button></div>
+    ${F('notify_overlay', 'Show "Clip saved" popup', 'Appears over borderless and windowed games', sw)}
+    ${F('notify_sound', 'Play a sound', '', sw)}
+    ${F('start_with_windows', 'Start with Windows', 'Runs quietly in the tray', sw)}
+    ${F('game_apps', 'Always treat as games', 'Exe names, one per line (for windowed games)', list)}
+    ${F('ignored_apps', 'Never treat as games', 'Exe names, one per line', list)}
+  </section>
+  <div class="savebar"><button class="primary" onclick="saveSettings()">Save settings</button><button class="ghost" onclick="resetSettings()">Restore defaults</button><span class="note">Saving restarts the recorder (about 1s).</span></div>
+  <section><h3>About</h3><div class="row"><div class="lbl note" id="about"></div><button class="ghost" style="color:#ff7070" onclick="uninstall()">Uninstall…</button></div></section>`;
+  document.querySelectorAll('#sform [data-k]').forEach(el => {
+    el.addEventListener('input', () => { read(); updateHints(); });
+    if (el.classList.contains('hotkey')) {
+      el.onclick = () => { el.classList.add('listening'); el.value = 'Press keys…'; };
+      el.onblur = () => { el.classList.remove('listening'); el.value = cfg[el.dataset.k]; };
+      el.onkeydown = e => {
+        e.preventDefault(); if (!el.classList.contains('listening')) return;
+        const k = keyName(e); if (!k) return;
+        if (e.key === 'Escape') { el.blur(); return; }
+        if (e.key === 'Backspace' || e.key === 'Delete') { cfg[el.dataset.k] = ''; el.blur(); return; }
+        cfg[el.dataset.k] = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', k].filter(Boolean).join('+'); el.blur();
+      };
+    }
+  });
+}
+function keyName(e) {
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return null;
+  if (/^F\d{1,2}$/.test(e.key)) return e.key;
+  if (/^Numpad\d$/.test(e.code)) return 'Num' + e.code.slice(6);
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+  if (/^Digit\d$/.test(e.code)) return e.code.slice(5);
+  return { PrintScreen: 'PrintScreen', Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Pause: 'Pause', Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete' }[e.key] || null;
+}
+function fill() {
+  document.querySelectorAll('#sform [data-k]').forEach(el => {
+    const v = cfg[el.dataset.k];
+    if (el.type === 'checkbox') el.checked = !!v; else if (el.dataset.list) el.value = (v || []).join('\n'); else el.value = v;
+  });
+  updateHints();
+}
+function read() {
+  document.querySelectorAll('#sform [data-k]').forEach(el => {
+    const k = el.dataset.k; if (el.classList.contains('hotkey')) return;
+    let v = el.type === 'checkbox' ? el.checked : el.dataset.list ? el.value.split(/[\n,]/).map(s => s.trim().toLowerCase()).filter(Boolean) : el.value;
+    if (typeof cfg[k] === 'number') v = parseFloat(v);
+    cfg[k] = v;
+  });
+}
+function updateHints() {
+  const q = cfg.quality; $('qLabel').textContent = q + ' — ' + (q <= 18 ? 'near lossless, big files' : q <= 22 ? 'high (recommended)' : q <= 25 ? 'good, smaller files' : 'small files');
+  $('ramEst').textContent = `Replay buffer uses up to ~${Math.round(cfg.max_bitrate_mbps / 8 * (cfg.clip_seconds + 5))} MB of RAM.`;
+  $('outShow').textContent = cfg.output_dir || '(default) Videos\\Crispy Clipper';
+}
+async function pickFolder() { try { cfg.output_dir = await call('pickFolder'); updateHints(); } catch { } }
+async function saveSettings() {
+  read();
+  try { await call('saveConfig', cfg); toast('Saved. Recorder restarted with the new settings'); setTimeout(refreshStatus, 2500); load(); }
+  catch (e) { toast('Could not save: ' + e, true); }
+}
+async function resetSettings() { if (!confirm('Restore all settings to defaults?')) return; cfg = await call('defaults'); fill(); toast('Defaults loaded. Click Save to apply'); }
+async function uninstall() {
+  if (!confirm('Uninstall Crispy Clipper?\n\nThis removes the app, shortcuts and settings. Your clips stay where they are.')) return;
+  await call('uninstall').catch(() => { });
+}
+
+// ---------- shell ----------
+function showTab(t) {
+  $('tabLib').classList.toggle('on', t === 'library'); $('tabSet').classList.toggle('on', t === 'settings');
+  $('libMain').classList.toggle('hidden', t !== 'library'); $('setMain').classList.toggle('hidden', t !== 'settings');
+  if (t === 'settings') call('config').then(c => { cfg = c; fill(); });
+}
+async function refreshStatus() {
+  try {
+    status = await call('status');
+    $('dot').classList.toggle('on', status.running);
+    $('statusText').textContent = status.running ? `Ready · ${cfg?.clip_hotkey || 'F8'} saves a clip` : 'Recorder not running';
+    $('startBtn').classList.toggle('hidden', status.running);
+    if ($('about')) $('about').innerHTML = `Version ${status.version}<br>FFmpeg: ${esc(status.ffmpeg || 'not found')}<br>Settings: ${esc(status.settingsPath)}<br>Log: ${esc(status.logPath)}`;
+  } catch { }
+}
+async function startRecorder() { await call('startRecorder'); setTimeout(refreshStatus, 1500); }
+
+buildSettings();
+call('config').then(c => { cfg = c; fill(); render(); refreshStatus(); });
+load();
+setInterval(refreshStatus, 5000);
+// Pick up new clips while the window is open.
+setInterval(() => { if ($('editor').classList.contains('hidden') && !document.hidden) load(); }, 4000);
+</script>
+</body>
+</html>
