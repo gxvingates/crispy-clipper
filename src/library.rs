@@ -24,7 +24,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, w};
 use wry::http::{Request, Response, StatusCode, header};
-use wry::{WebContext, WebViewBuilder};
+use wry::{WebContext, WebViewBuilder, WebViewBuilderExtWindows};
 
 const UI: &str = include_str!("ui.html");
 const TITLE: &str = "Crispy Clipper";
@@ -60,6 +60,11 @@ pub fn run() {
         .with_url("http://app.localhost/")
         .with_background_color((17, 17, 21, 255))
         .with_devtools(cfg!(debug_assertions))
+        .with_browser_accelerator_keys(false)
+        // Lean WebView2: no background services, one renderer, GPU kept for video decoding.
+        .with_additional_browser_args(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,             AutofillServerCommunication,MediaRouter,OptimizationHints,Translate              --disable-background-networking --disable-component-update --disable-extensions --disable-sync              --no-pings --no-first-run --renderer-process-limit=1 --in-process-gpu --js-flags=--max-old-space-size=96",
+        )
         .with_asynchronous_custom_protocol("app".into(), |_id, req, responder| {
             std::thread::spawn(move || responder.respond(serve(&req)));
         })

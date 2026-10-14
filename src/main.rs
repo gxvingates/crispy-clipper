@@ -119,6 +119,18 @@ fn main() {
     if has("--library") {
         return library::run();
     }
+    if has("--install") {
+        // Silent install (no prompt), then launch the installed copy.
+        match install::install() {
+            Ok(target) => {
+                let _ = std::process::Command::new(target).spawn();
+            }
+            Err(e) => {
+                message_box(&format!("Install failed: {e}"), MB_ICONERROR);
+            }
+        }
+        return;
+    }
     let background = has("--background");
     log_to_file();
 
@@ -165,22 +177,37 @@ fn main() {
         }
     };
 
-    let ffmpeg_path = match ffmpeg::locate(&cfg) {
-        Some(p) => p,
-        None => {
-            let r = message_box(
-                "Crispy Clipper needs its video encoder (FFmpeg, about 15 MB) to record.\n\nDownload it now?",
-                MB_OKCANCEL | MB_ICONINFORMATION,
-            );
-            if r != IDOK {
+    // Prefer our own tested FFmpeg build; any other copy is only a fallback.
+    let declined = config::data_dir().join("ffmpeg-declined");
+    let fallback = ffmpeg::locate(&cfg);
+    let ffmpeg_path = if ffmpeg::managed_path().exists() || install::is_dev_build() && fallback.is_some() {
+        fallback.unwrap()
+    } else if declined.exists() && fallback.is_some() {
+        fallback.unwrap()
+    } else {
+        let r = message_box(
+            "Crispy Clipper needs to download its video encoder (a minimal FFmpeg build, about 15 MB)              from github.com/gxvingates/crispy-clipper.
+
+Download it now?",
+            MB_OKCANCEL | MB_ICONINFORMATION,
+        );
+        match (r == IDOK).then(ffmpeg::download) {
+            Some(Ok(p)) => p,
+            Some(Err(e)) if fallback.is_none() => {
+                message_box(&format!("Download failed:
+{e}
+
+Check your internet connection and try again."), MB_ICONERROR);
                 return;
             }
-            match ffmpeg::download() {
-                Ok(p) => p,
-                Err(e) => {
-                    message_box(&format!("Download failed:\n{e}\n\nCheck your internet connection and try again."), MB_ICONERROR);
-                    return;
+            None if fallback.is_none() => return,
+            res => {
+                if let Some(Err(e)) = res {
+                    eprintln!("[app] ffmpeg download failed: {e}");
+                } else {
+                    let _ = std::fs::write(&declined, "");
                 }
+                fallback.unwrap()
             }
         }
     };

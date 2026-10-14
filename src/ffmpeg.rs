@@ -15,13 +15,13 @@ pub fn managed_path() -> PathBuf {
     config::data_dir().join("ffmpeg.exe")
 }
 
-/// ffmpeg.exe next to the app, then the app's own download, then a custom path, then PATH.
+/// The app's own download, then ffmpeg.exe next to the app, then a custom path, then PATH.
 pub fn locate(cfg: &Config) -> Option<PathBuf> {
     let custom = (cfg.ffmpeg != "ffmpeg").then(|| PathBuf::from(&cfg.ffmpeg));
     let on_path = std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p).map(|d| d.join("ffmpeg.exe")).find(|f| f.exists())
     });
-    [Some(config::exe_dir().join("ffmpeg.exe")), Some(managed_path()), custom, on_path]
+    [Some(managed_path()), Some(config::exe_dir().join("ffmpeg.exe")), custom, on_path]
         .into_iter()
         .flatten()
         .find(|p| p.exists())
