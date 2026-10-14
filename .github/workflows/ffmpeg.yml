@@ -24,7 +24,8 @@ jobs:
 
       - name: GPU encoder headers (NVIDIA, AMD)
         run: |
-          git clone --depth 1 https://github.com/FFmpeg/nv-codec-headers
+          # SDK 12.1: works with NVIDIA drivers 531+ (2023) and supports AV1.
+          git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-headers
           sudo make -C nv-codec-headers install PREFIX=/opt/deps
           git clone --depth 1 https://github.com/GPUOpen-LibrariesAndSDKs/AMF
           sudo mkdir -p /opt/deps/include/AMF
