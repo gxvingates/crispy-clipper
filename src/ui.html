@@ -365,10 +365,9 @@ function buildSettings() {
     ${F('show_cursor', 'Show mouse cursor', '', sw)}
   </section>
   <section><h3>Audio</h3>
-    ${F('system_audio', 'Game / PC audio', '"Game only" leaves out Discord, music etc. (Windows 10 2004+)', sel([['all', 'Everything I hear'], ['game', 'Game only'], ['off', 'Off']]))}
-    ${F('system_volume', 'PC audio volume', '', range(0, 2, 0.05))}
-    ${F('microphone', 'Record microphone', 'Uses your Windows default mic', sw)}
-    ${F('mic_volume', 'Mic volume', '', range(0, 2, 0.05))}
+    <div id="srcList"></div>
+    <div class="row"><div class="lbl">Add a source<small>Pick each output your games and chat play through (e.g. separate mixer channels) or use "Everything I hear"</small></div>
+      <select id="addSrc" onchange="addSource(this)"></select></div>
   </section>
   <section><h3>Hotkeys</h3>
     ${F('clip_hotkey', 'Save clip', 'Click, then press a key combo', hk)}
@@ -400,6 +399,39 @@ function buildSettings() {
     }
   });
 }
+let devices = { outputs: [], inputs: [] };
+const SPECIAL = [
+  ['all-outputs', 'Everything I hear', 'Every active output device mixed together'],
+  ['default-output', 'Default output', 'Whatever Windows is currently playing to'],
+  ['game', 'Game only', "Only the detected game's sound (Windows 10 2004+)"],
+  ['default-input', 'Microphone', 'Your Windows default mic'],
+];
+function srcLabel(s) {
+  const sp = SPECIAL.find(x => x[0] === s.id); if (sp) return [sp[1], sp[2]];
+  const o = devices.outputs.find(d => d.id === s.id), i = devices.inputs.find(d => d.id === s.id);
+  if (o) return [o.name, 'Output device'];
+  if (i) return [i.name, 'Input device'];
+  return [s.name || 'Unknown device', 'Not connected right now'];
+}
+function renderSources() {
+  $('srcList').innerHTML = (cfg.audio_sources || []).map((s, n) => {
+    const [name, hint] = srcLabel(s);
+    return `<div class="row"><div class="lbl">${esc(name)}<small>${esc(hint)}</small></div>
+      <input type="range" min="0" max="2" step="0.05" value="${s.volume}" title="Volume" oninput="cfg.audio_sources[${n}].volume=+this.value;this.nextElementSibling.textContent=Math.round(this.value*100)+'%'">
+      <span class="note" style="width:44px;text-align:right">${Math.round(s.volume * 100)}%</span>
+      <button class="ghost" onclick="cfg.audio_sources.splice(${n},1);renderSources()" title="Remove">✕</button></div>`;
+  }).join('') || '<div class="row"><div class="lbl note">No audio will be recorded. Add a source below.</div></div>';
+  const used = new Set((cfg.audio_sources || []).map(s => s.id));
+  const opt = (id, label) => used.has(id) ? '' : `<option value="${esc(id)}">${esc(label)}</option>`;
+  $('addSrc').innerHTML = '<option value="">Add…</option>' + SPECIAL.map(([id, l]) => opt(id, l)).join('')
+    + (devices.outputs.length ? `<optgroup label="Output devices">${devices.outputs.map(d => opt(d.id, d.name)).join('')}</optgroup>` : '')
+    + (devices.inputs.length ? `<optgroup label="Input devices">${devices.inputs.map(d => opt(d.id, d.name)).join('')}</optgroup>` : '');
+}
+function addSource(sel) {
+  const id = sel.value; sel.value = ''; if (!id) return;
+  const name = [...SPECIAL.map(x => ({ id: x[0], name: x[1] })), ...devices.outputs, ...devices.inputs].find(d => d.id === id)?.name || '';
+  cfg.audio_sources.push({ id, name, volume: 1 }); renderSources();
+}
 function keyName(e) {
   if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return null;
   if (/^F\d{1,2}$/.test(e.key)) return e.key;
@@ -409,6 +441,8 @@ function keyName(e) {
   return { PrintScreen: 'PrintScreen', Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Pause: 'Pause', Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete' }[e.key] || null;
 }
 function fill() {
+  renderSources();
+  call('audioDevices').then(d => { devices = d; renderSources(); }).catch(() => { });
   document.querySelectorAll('#sform [data-k]').forEach(el => {
     const v = cfg[el.dataset.k];
     if (el.type === 'checkbox') el.checked = !!v; else if (el.dataset.list) el.value = (v || []).join('\n'); else el.value = v;

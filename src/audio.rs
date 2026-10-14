@@ -1,4 +1,4 @@
-//! WASAPI capture (system or per-game loopback + default mic) mixed into a clock-driven
+//! WASAPI capture (output loopback, per-game loopback, inputs) mixed into a clock-driven
 //! 48 kHz stereo f32 stream for FFmpeg's stdin. Capture threads only hold audio devices
 //! while a mixer is pumping, so nothing runs when the recorder is idle.
 
@@ -16,11 +16,66 @@ const CH: usize = 2;
 const MAX_QUEUE: usize = RATE as usize * CH / 5; // 200 ms
 const PREBUFFER: usize = RATE as usize * CH / 25; // 40 ms
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Kind {
-    System,
+    DefaultOutput,
+    DefaultInput,
     Game,
-    Mic,
+    /// A specific endpoint; `render` = output device (captured via loopback).
+    Device { id: String, render: bool },
+}
+
+impl Kind {
+    fn name(&self) -> &str {
+        match self {
+            Kind::DefaultOutput => "default output",
+            Kind::DefaultInput => "default input",
+            Kind::Game => "game",
+            Kind::Device { id, .. } => id,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub name: String,
+}
+
+/// Active (output, input) devices.
+pub fn list_devices() -> (Vec<DeviceInfo>, Vec<DeviceInfo>) {
+    let _ = wasapi::initialize_mta();
+    let list = |dir: Direction| -> Vec<DeviceInfo> {
+        let Ok(e) = DeviceEnumerator::new() else { return Vec::new() };
+        let Ok(c) = e.get_device_collection(&dir) else { return Vec::new() };
+        (&c).into_iter()
+            .flatten()
+            .filter_map(|d| Some(DeviceInfo { id: d.get_id().ok()?, name: d.get_friendlyname().ok()? }))
+            .collect()
+    };
+    (list(Direction::Render), list(Direction::Capture))
+}
+
+/// Turns configured sources into capture targets ("all-outputs" becomes one per output device).
+fn expand(sources: &[crate::config::AudioSource]) -> Vec<(Kind, f32)> {
+    let (outputs, inputs) = list_devices();
+    let mut v: Vec<(Kind, f32)> = Vec::new();
+    for s in sources {
+        let kinds = match s.id.as_str() {
+            "all-outputs" => outputs.iter().map(|d| Kind::Device { id: d.id.clone(), render: true }).collect(),
+            "default-output" => vec![Kind::DefaultOutput],
+            "default-input" => vec![Kind::DefaultInput],
+            "game" => vec![Kind::Game],
+            id => vec![Kind::Device { id: id.to_string(), render: !inputs.iter().any(|d| d.id == id) }],
+        };
+        for k in kinds {
+            // The same device listed twice would double its volume.
+            if !v.iter().any(|(e, _)| *e == k) {
+                v.push((k, s.volume));
+            }
+        }
+    }
+    v
 }
 
 struct Source {
@@ -36,17 +91,12 @@ pub struct Mixer {
 }
 
 impl Mixer {
-    pub fn new(system: &str, system_volume: f32, mic: Option<f32>) -> Mixer {
+    pub fn new(config: &[crate::config::AudioSource]) -> Mixer {
         let active = Arc::new(AtomicU64::new(0));
         let game_pid = Arc::new(AtomicU32::new(0));
         let mut sources = Vec::new();
-        let sys = match system {
-            "game" => Some(Kind::Game),
-            "off" | "none" => None,
-            _ => Some(Kind::System),
-        };
-        for (kind, vol) in [(sys, Some(system_volume)), (Some(Kind::Mic), mic)] {
-            let (Some(kind), Some(volume)) = (kind, vol) else { continue };
+        for (kind, volume) in expand(config) {
+            eprintln!("[audio] source {} (volume {volume})", kind.name());
             let src = Arc::new(Source { queue: Mutex::new(VecDeque::new()), volume });
             let (s, a, p) = (src.clone(), active.clone(), game_pid.clone());
             thread::spawn(move || capture_forever(kind, s, a, p));
@@ -141,9 +191,9 @@ fn capture_forever(kind: Kind, src: Arc<Source>, active: Arc<AtomicU64>, game_pi
             thread::sleep(Duration::from_millis(250));
             continue;
         }
-        if let Err(e) = capture(kind, &src, &active, &game_pid) {
-            eprintln!("[audio] {e}; retrying");
-            thread::sleep(Duration::from_secs(2));
+        if let Err(e) = capture(kind.clone(), &src, &active, &game_pid) {
+            eprintln!("[audio] {}: {e}; retrying", kind.name());
+            thread::sleep(Duration::from_secs(5)); // e.g. device unplugged
         }
         src.queue.lock().unwrap().clear();
     }
@@ -159,9 +209,13 @@ fn capture(
     let fmt = WaveFormat::new(32, 32, &SampleType::Float, RATE as usize, CH, None);
     let mode = StreamMode::PollingShared { autoconvert: true, buffer_duration_hns: 2_000_000 };
     let enumerator = DeviceEnumerator::new()?;
-    let dir = if kind == Kind::Mic { Direction::Capture } else { Direction::Render };
     let pid = game_pid.load(Ordering::SeqCst);
-    let (mut client, device_id) = match kind {
+    let default_dir = match &kind {
+        Kind::DefaultOutput => Some(Direction::Render),
+        Kind::DefaultInput => Some(Direction::Capture),
+        _ => None,
+    };
+    let (mut client, device_id) = match &kind {
         Kind::Game => {
             if pid == 0 {
                 thread::sleep(Duration::from_millis(250));
@@ -169,8 +223,9 @@ fn capture(
             }
             (wasapi::AudioClient::new_application_loopback_client(pid, true)?, String::new())
         }
+        Kind::Device { id, .. } => (enumerator.get_device(id)?.get_iaudioclient()?, id.clone()),
         _ => {
-            let device = enumerator.get_default_device(&dir)?;
+            let device = enumerator.get_default_device(default_dir.as_ref().unwrap())?;
             (device.get_iaudioclient()?, device.get_id()?)
         }
     };
@@ -209,9 +264,10 @@ fn capture(
         }
         if last_check.elapsed() > Duration::from_secs(2) {
             last_check = Instant::now();
-            let changed = match kind {
-                Kind::Game => game_pid.load(Ordering::SeqCst) != pid,
-                _ => enumerator.get_default_device(&dir)?.get_id()? != device_id,
+            let changed = match (&kind, &default_dir) {
+                (Kind::Game, _) => game_pid.load(Ordering::SeqCst) != pid,
+                (_, Some(dir)) => enumerator.get_default_device(dir)?.get_id()? != device_id,
+                _ => false,
             };
             if changed {
                 break;

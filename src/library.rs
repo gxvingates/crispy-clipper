@@ -302,6 +302,10 @@ fn run_command(cmd: &str, args: &Value) -> Result<Value, String> {
     match cmd {
         "list" => Ok(list_clips()),
         "status" => Ok(status()),
+        "audioDevices" => {
+            let (outputs, inputs) = crate::audio::list_devices();
+            Ok(json!({ "outputs": outputs, "inputs": inputs }))
+        }
         "config" => serde_json::to_value(cfg()).map_err(|e| e.to_string()),
         "defaults" => serde_json::to_value(Config::parse("").unwrap()).map_err(|e| e.to_string()),
         "saveConfig" => {

@@ -28,11 +28,16 @@ max_bitrate_mbps = 50
 encoder = "auto"
 show_cursor = true
 
-# "all" = everything you hear, "game" = only the game's own sound (no Discord/Spotify).
-system_audio = "all"
-system_volume = 1.0
-microphone = true
-mic_volume = 1.0
+# Audio sources mixed into clips. id is one of:
+#   "all-outputs"    every active output device (true "everything I hear", even with multi-output mixers)
+#   "default-output" whatever Windows' default output is
+#   "default-input"  Windows' default microphone
+#   "game"           only the detected game's own sound
+#   or a specific device id (pick devices in the app's Settings).
+audio_sources = [
+  { id = "all-outputs", name = "Everything I hear", volume = 1.0 },
+  { id = "default-input", name = "Microphone", volume = 1.0 },
+]
 
 notify_overlay = true
 notify_sound = true
@@ -54,6 +59,14 @@ ffmpeg = "ffmpeg"
 "#;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct AudioSource {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    pub volume: f32,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Config {
     pub capture_mode: String,
     pub clip_seconds: u32,
@@ -69,10 +82,7 @@ pub struct Config {
     pub max_bitrate_mbps: u32,
     pub encoder: String,
     pub show_cursor: bool,
-    pub system_audio: String,
-    pub system_volume: f32,
-    pub microphone: bool,
-    pub mic_volume: f32,
+    pub audio_sources: Vec<AudioSource>,
     pub notify_overlay: bool,
     pub notify_sound: bool,
     pub start_with_windows: bool,

@@ -61,7 +61,7 @@ fn output_size(idx: u32) -> Option<(u32, u32)> {
 
 impl Recorder {
     pub fn new(cfg: Config, ffmpeg: PathBuf, events: mpsc::Sender<Event>, on_event: impl Fn() + Send + Sync + 'static) -> Arc<Recorder> {
-        let mixer = Mixer::new(&cfg.system_audio, cfg.system_volume, cfg.microphone.then_some(cfg.mic_volume));
+        let mixer = Mixer::new(&cfg.audio_sources);
         Arc::new(Recorder {
             ring: Mutex::new(Ring::new(Duration::from_secs(cfg.clip_seconds as u64 + 5))),
             cfg,
