@@ -192,7 +192,7 @@ fn main() {
         fallback.unwrap()
     } else {
         let r = message_box(
-            "Crispy Clipper needs to download its video encoder (a minimal FFmpeg build, about 15 MB)              from github.com/gxvingates/crispy-clipper.
+            "Crispy Clipper needs to download its video encoder (a minimal FFmpeg build, about 9 MB)              from github.com/gxvingates/crispy-clipper.
 
 Download it now?",
             MB_OKCANCEL | MB_ICONINFORMATION,

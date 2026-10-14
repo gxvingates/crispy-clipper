@@ -1,14 +1,14 @@
 # Crispy Clipper
 
 Save the last 30 seconds of your game with one key. Crispy Clipper runs entirely on your own PC: there's no account,
-no uploads, no ads and no telemetry. It's a ~2 MB app, and it uses nothing while you aren't playing.
+no uploads, no ads and no telemetry. It's a ~1.5 MB app, and it uses nothing while you aren't playing.
 
 ## Install
 
 1. Download **CrispyClipper.exe** from the [latest release](https://github.com/gxvingates/crispy-clipper/releases/latest).
 2. Double-click it and choose **Yes** to install. It adds itself to the Start menu and desktop and starts with
    Windows.
-3. On first run it downloads its video encoder (a ~15 MB stripped-down FFmpeg, built by this repo's
+3. On first run it downloads its video encoder (a 9 MB stripped-down FFmpeg, built by this repo's
    [workflow](.github/workflows/ffmpeg.yml)).
 
 Windows may show "Windows protected your PC" because the exe isn't code-signed: click **More info → Run anyway**.
