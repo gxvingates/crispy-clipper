@@ -67,14 +67,6 @@ pub fn command(path: &PathBuf) -> Command {
     c
 }
 
-pub fn has_filter(path: &PathBuf, name: &str) -> bool {
-    command(path)
-        .arg("-filters")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.split_whitespace().nth(1) == Some(name)))
-        .unwrap_or(false)
-}
-
 /// Hardware encoders in preference order, then the CPU fallback.
 pub fn encoder_candidates(cfg: &Config) -> Vec<String> {
     if cfg.encoder != "auto" {
