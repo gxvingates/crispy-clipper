@@ -192,18 +192,14 @@ fn main() {
         fallback.unwrap()
     } else {
         let r = message_box(
-            "Crispy Clipper needs to download its video encoder (a minimal FFmpeg build, about 9 MB)              from github.com/gxvingates/crispy-clipper.
-
-Download it now?",
+            "Crispy Clipper needs to download its video encoder (a minimal FFmpeg build, about 9 MB) \
+             from github.com/gxvingates/crispy-clipper.\n\nDownload it now?",
             MB_OKCANCEL | MB_ICONINFORMATION,
         );
         match (r == IDOK).then(ffmpeg::download) {
             Some(Ok(p)) => p,
             Some(Err(e)) if fallback.is_none() => {
-                message_box(&format!("Download failed:
-{e}
-
-Check your internet connection and try again."), MB_ICONERROR);
+                message_box(&format!("Download failed:\n{e}\n\nCheck your internet connection and try again."), MB_ICONERROR);
                 return;
             }
             None if fallback.is_none() => return,
