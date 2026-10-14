@@ -116,6 +116,12 @@ fn settings_mtime() -> Option<SystemTime> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let has = |a: &str| args.iter().any(|x| x == a);
+    // Real pixel sizes for monitor detection, downscaling and the popup on scaled displays.
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
     if has("--library") {
         return library::run();
     }

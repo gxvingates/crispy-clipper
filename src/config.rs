@@ -29,7 +29,8 @@ encoder = "auto"
 show_cursor = true
 
 # Audio sources mixed into clips. id is one of:
-#   "all-outputs"    every active output device (true "everything I hear", even with multi-output mixers)
+#   "all-outputs"    everything I hear: every channel of the audio device you listen through
+#                    (all channels of mixers like BEACN, GoXLR, Wave Link; just the speakers otherwise)
 #   "default-output" whatever Windows' default output is
 #   "default-input"  Windows' default microphone
 #   "game"           only the detected game's own sound

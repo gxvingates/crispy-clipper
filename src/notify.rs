@@ -9,9 +9,13 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-static TEXT: Mutex<(String, bool)> = Mutex::new((String::new(), true));
+static TEXT: Mutex<(String, bool, f32)> = Mutex::new((String::new(), true, 1.0));
 const W: i32 = 380;
 const H: i32 = 64;
+
+fn px(v: i32, scale: f32) -> i32 {
+    (v as f32 * scale).round() as i32
+}
 
 pub struct Toast(HWND);
 
@@ -42,11 +46,20 @@ impl Toast {
     }
 
     pub fn show(&self, text: &str, ok: bool) {
-        *TEXT.lock().unwrap() = (text.to_string(), ok);
-        let m = games::monitor_rect(games::foreground_monitor());
+        let monitor = games::foreground_monitor();
+        let (mut dx, mut dy) = (96u32, 96u32);
+        unsafe {
+            let _ = windows::Win32::UI::HiDpi::GetDpiForMonitor(
+                monitor, windows::Win32::UI::HiDpi::MDT_EFFECTIVE_DPI, &mut dx, &mut dy,
+            );
+        }
+        let scale = dx as f32 / 96.0;
+        *TEXT.lock().unwrap() = (text.to_string(), ok, scale);
+        let m = games::monitor_rect(monitor);
+        let (w, h, margin) = (px(W, scale), px(H, scale), px(24, scale));
         unsafe {
             let _ = SetWindowPos(
-                self.0, Some(HWND_TOPMOST), m.right - W - 24, m.top + 24, W, H,
+                self.0, Some(HWND_TOPMOST), m.right - w - margin, m.top + margin, w, h,
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
             let _ = InvalidateRect(Some(self.0), None, true);
@@ -61,13 +74,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
                 let dc = BeginPaint(hwnd, &mut ps);
-                let (text, ok) = TEXT.lock().unwrap().clone();
+                let (text, ok, scale) = TEXT.lock().unwrap().clone();
+                let (w, h) = (px(W, scale), px(H, scale));
                 let bg = CreateSolidBrush(COLORREF(0x001e1a18)); // BGR
                 let accent = CreateSolidBrush(COLORREF(if ok { 0x004646ff } else { 0x000080ff }));
-                FillRect(dc, &RECT { left: 0, top: 0, right: W, bottom: H }, bg);
-                FillRect(dc, &RECT { left: 0, top: 0, right: 6, bottom: H }, accent);
+                FillRect(dc, &RECT { left: 0, top: 0, right: w, bottom: h }, bg);
+                FillRect(dc, &RECT { left: 0, top: 0, right: px(6, scale), bottom: h }, accent);
                 let font = CreateFontW(
-                    22, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                    px(22, scale), 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                     CLEARTYPE_QUALITY, (VARIABLE_PITCH.0 | FF_SWISS.0) as u32, w!("Segoe UI"),
                 );
                 let old = SelectObject(dc, font.into());
@@ -75,7 +89,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 SetTextColor(dc, COLORREF(0x00f0f0f0));
                 let mut wide: Vec<u16> = text.encode_utf16().collect();
                 if !wide.is_empty() {
-                    let mut r = RECT { left: 22, top: 0, right: W - 12, bottom: H };
+                    let mut r = RECT { left: px(22, scale), top: 0, right: w - px(12, scale), bottom: h };
                     DrawTextW(dc, &mut wide, &mut r, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
                 }
                 SelectObject(dc, old);

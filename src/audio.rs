@@ -40,6 +40,9 @@ impl Kind {
 pub struct DeviceInfo {
     pub id: String,
     pub name: String,
+    /// The audio hardware this endpoint belongs to (e.g. "BEACN Mix Create").
+    pub interface: String,
+    pub default: bool,
 }
 
 /// Active (output, input) devices.
@@ -48,12 +51,40 @@ pub fn list_devices() -> (Vec<DeviceInfo>, Vec<DeviceInfo>) {
     let list = |dir: Direction| -> Vec<DeviceInfo> {
         let Ok(e) = DeviceEnumerator::new() else { return Vec::new() };
         let Ok(c) = e.get_device_collection(&dir) else { return Vec::new() };
+        let default = e.get_default_device(&dir).and_then(|d| d.get_id()).unwrap_or_default();
         (&c).into_iter()
             .flatten()
-            .filter_map(|d| Some(DeviceInfo { id: d.get_id().ok()?, name: d.get_friendlyname().ok()? }))
+            .filter_map(|d| {
+                let id = d.get_id().ok()?;
+                Some(DeviceInfo {
+                    name: d.get_friendlyname().ok()?,
+                    interface: d.get_interface_friendlyname().unwrap_or_default(),
+                    default: id == default,
+                    id,
+                })
+            })
             .collect()
     };
     (list(Direction::Render), list(Direction::Capture))
+}
+
+/// Every channel of the audio hardware you listen through: mixers like BEACN, GoXLR, Wave Link
+/// or audio interfaces expose several Windows outputs that all end up in your headphones.
+/// Other devices are left out because software often mirrors audio to them (capturing those
+/// would record the same sound twice).
+fn everything_i_hear(outputs: &[DeviceInfo]) -> Vec<Kind> {
+    let Some(def) = outputs.iter().find(|d| d.default) else { return vec![Kind::DefaultOutput] };
+    if def.interface.is_empty() {
+        return vec![Kind::DefaultOutput];
+    }
+    outputs
+        .iter()
+        .filter(|d| d.interface == def.interface && !d.name.to_lowercase().contains("do not use"))
+        .map(|d| {
+            eprintln!("[audio] everything I hear: {}", d.name);
+            Kind::Device { id: d.id.clone(), render: true }
+        })
+        .collect()
 }
 
 /// Turns configured sources into capture targets ("all-outputs" becomes one per output device).
@@ -62,7 +93,7 @@ fn expand(sources: &[crate::config::AudioSource]) -> Vec<(Kind, f32)> {
     let mut v: Vec<(Kind, f32)> = Vec::new();
     for s in sources {
         let kinds = match s.id.as_str() {
-            "all-outputs" => outputs.iter().map(|d| Kind::Device { id: d.id.clone(), render: true }).collect(),
+            "all-outputs" => everything_i_hear(&outputs),
             "default-output" => vec![Kind::DefaultOutput],
             "default-input" => vec![Kind::DefaultInput],
             "game" => vec![Kind::Game],
@@ -95,13 +126,16 @@ impl Mixer {
         let active = Arc::new(AtomicU64::new(0));
         let game_pid = Arc::new(AtomicU32::new(0));
         let mut sources = Vec::new();
+        let mut targets = Vec::new();
         for (kind, volume) in expand(config) {
-            eprintln!("[audio] source {} (volume {volume})", kind.name());
             let src = Arc::new(Source { queue: Mutex::new(VecDeque::new()), volume });
-            let (s, a, p) = (src.clone(), active.clone(), game_pid.clone());
-            thread::spawn(move || capture_forever(kind, s, a, p));
+            targets.push((kind, src.clone()));
             sources.push(src);
         }
+        eprintln!("[audio] {} capture sources", targets.len());
+        // One thread services every device: ~100 wake-ups/s total no matter how many outputs.
+        let (a, p) = (active.clone(), game_pid.clone());
+        thread::spawn(move || capture_loop(targets, a, p));
         Mixer { sources, active, game_pid }
     }
 
@@ -184,96 +218,152 @@ impl Mixer {
     }
 }
 
-fn capture_forever(kind: Kind, src: Arc<Source>, active: Arc<AtomicU64>, game_pid: Arc<AtomicU32>) {
-    let _ = wasapi::initialize_mta();
-    loop {
-        if active.load(Ordering::SeqCst) == 0 {
-            thread::sleep(Duration::from_millis(250));
-            continue;
-        }
-        if let Err(e) = capture(kind.clone(), &src, &active, &game_pid) {
-            eprintln!("[audio] {}: {e}; retrying", kind.name());
-            thread::sleep(Duration::from_secs(5)); // e.g. device unplugged
-        }
-        src.queue.lock().unwrap().clear();
+struct Live {
+    client: wasapi::AudioClient,
+    capture: wasapi::AudioCaptureClient,
+    device_id: String,
+    pid: u32,
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let _ = self.client.stop_stream();
     }
 }
 
-/// Captures until capture is deactivated or the device/target changes.
-fn capture(
+struct Target {
     kind: Kind,
-    src: &Source,
-    active: &AtomicU64,
-    game_pid: &AtomicU32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let fmt = WaveFormat::new(32, 32, &SampleType::Float, RATE as usize, CH, None);
-    let mode = StreamMode::PollingShared { autoconvert: true, buffer_duration_hns: 2_000_000 };
-    let enumerator = DeviceEnumerator::new()?;
-    let pid = game_pid.load(Ordering::SeqCst);
-    let default_dir = match &kind {
-        Kind::DefaultOutput => Some(Direction::Render),
-        Kind::DefaultInput => Some(Direction::Capture),
-        _ => None,
-    };
-    let (mut client, device_id) = match &kind {
-        Kind::Game => {
-            if pid == 0 {
-                thread::sleep(Duration::from_millis(250));
-                return Ok(());
-            }
-            (wasapi::AudioClient::new_application_loopback_client(pid, true)?, String::new())
-        }
-        Kind::Device { id, .. } => (enumerator.get_device(id)?.get_iaudioclient()?, id.clone()),
-        _ => {
-            let device = enumerator.get_default_device(default_dir.as_ref().unwrap())?;
-            (device.get_iaudioclient()?, device.get_id()?)
-        }
-    };
-    // Direction::Capture on a render device (or a process client) = loopback.
-    client.initialize_client(&fmt, &Direction::Capture, &mode)?;
-    let capture = client.get_audiocaptureclient()?;
-    client.start_stream()?;
+    src: Arc<Source>,
+    live: Option<Live>,
+    retry_at: Instant,
+    failures: u32,
+    last_error: String,
+}
 
+fn capture_loop(targets: Vec<(Kind, Arc<Source>)>, active: Arc<AtomicU64>, game_pid: Arc<AtomicU32>) {
+    let _ = wasapi::initialize_mta();
+    let mut targets: Vec<Target> = targets
+        .into_iter()
+        .map(|(kind, src)| Target { kind, src, live: None, retry_at: Instant::now(), failures: 0, last_error: String::new() })
+        .collect();
     let mut raw: VecDeque<u8> = VecDeque::new();
     let mut last_check = Instant::now();
-    while active.load(Ordering::SeqCst) != 0 {
-        thread::sleep(Duration::from_millis(5));
-        // Each GetBuffer returns one ~10 ms packet: drain all that are waiting.
-        while capture.get_next_packet_size()?.unwrap_or(0) > 0 {
-            let before = raw.len();
-            let info = capture.read_from_device_to_deque(&mut raw)?;
-            if info.flags.silent {
-                // The buffer contents are undefined for silent packets.
-                raw.range_mut(before..).for_each(|b| *b = 0);
-            }
+    let enumerator = loop {
+        match DeviceEnumerator::new() {
+            Ok(e) => break e,
+            Err(_) => thread::sleep(Duration::from_secs(1)),
         }
-        if raw.len() >= 4 {
-            let mut q = src.queue.lock().unwrap();
-            let samples = raw.len() / 4;
-            let (a, b) = raw.as_slices();
-            let mut it = a.iter().chain(b.iter()).copied();
-            for _ in 0..samples {
-                let v = [it.next().unwrap(), it.next().unwrap(), it.next().unwrap(), it.next().unwrap()];
-                q.push_back(f32::from_le_bytes(v));
+    };
+    loop {
+        if active.load(Ordering::SeqCst) == 0 {
+            // Idle: release every device.
+            for t in &mut targets {
+                t.live = None;
+                t.failures = 0;
+                t.retry_at = Instant::now();
             }
-            raw.drain(..samples * 4);
-            if q.len() > MAX_QUEUE * 2 {
-                let excess = q.len() - MAX_QUEUE * 2;
-                q.drain(..excess);
-            }
+            thread::sleep(Duration::from_millis(250));
+            continue;
         }
-        if last_check.elapsed() > Duration::from_secs(2) {
+        thread::sleep(Duration::from_millis(10));
+        let check = last_check.elapsed() > Duration::from_secs(2);
+        if check {
             last_check = Instant::now();
-            let changed = match (&kind, &default_dir) {
-                (Kind::Game, _) => game_pid.load(Ordering::SeqCst) != pid,
-                (_, Some(dir)) => enumerator.get_default_device(dir)?.get_id()? != device_id,
-                _ => false,
-            };
-            if changed {
-                break;
+        }
+        for t in &mut targets {
+            if t.live.is_none() {
+                if Instant::now() < t.retry_at {
+                    continue;
+                }
+                match open(&t.kind, &enumerator, game_pid.load(Ordering::SeqCst)) {
+                    Ok(l) => {
+                        t.live = l;
+                        t.failures = 0;
+                        t.src.queue.lock().unwrap().clear();
+                    }
+                    Err(e) => {
+                        let e = e.to_string();
+                        if e != t.last_error {
+                            eprintln!("[audio] {}: {e}", t.kind.name());
+                            t.last_error = e;
+                        }
+                        t.failures += 1;
+                        t.retry_at = Instant::now() + Duration::from_secs((2u64 << t.failures.min(4)).min(30));
+                    }
+                }
+                continue;
+            }
+            let live = t.live.as_ref().unwrap();
+            if let Err(e) = drain(live, &mut raw, &t.src) {
+                eprintln!("[audio] {}: {e}", t.kind.name());
+                t.live = None;
+                t.retry_at = Instant::now() + Duration::from_secs(1);
+                continue;
+            }
+            // Reopen when the default device or the game changes.
+            if check {
+                let changed = match &t.kind {
+                    Kind::Game => game_pid.load(Ordering::SeqCst) != live.pid,
+                    Kind::DefaultOutput | Kind::DefaultInput => {
+                        let dir = if t.kind == Kind::DefaultOutput { Direction::Render } else { Direction::Capture };
+                        enumerator.get_default_device(&dir).and_then(|d| d.get_id()).map(|id| id != live.device_id).unwrap_or(true)
+                    }
+                    Kind::Device { .. } => false,
+                };
+                if changed {
+                    t.live = None;
+                }
             }
         }
     }
-    let _ = client.stop_stream();
+}
+
+/// Opens a capture stream (loopback for outputs and games). Ok(None) = nothing to capture yet.
+fn open(kind: &Kind, enumerator: &DeviceEnumerator, pid: u32) -> Result<Option<Live>, Box<dyn std::error::Error>> {
+    let fmt = WaveFormat::new(32, 32, &SampleType::Float, RATE as usize, CH, None);
+    let mode = StreamMode::PollingShared { autoconvert: true, buffer_duration_hns: 2_000_000 };
+    let (mut client, device_id) = match kind {
+        Kind::Game if pid == 0 => return Ok(None),
+        Kind::Game => (wasapi::AudioClient::new_application_loopback_client(pid, true)?, String::new()),
+        Kind::Device { id, .. } => (enumerator.get_device(id)?.get_iaudioclient()?, id.clone()),
+        Kind::DefaultOutput | Kind::DefaultInput => {
+            let dir = if *kind == Kind::DefaultOutput { Direction::Render } else { Direction::Capture };
+            let d = enumerator.get_default_device(&dir)?;
+            (d.get_iaudioclient()?, d.get_id()?)
+        }
+    };
+    // Direction::Capture on an output device (or a process client) = loopback.
+    client.initialize_client(&fmt, &Direction::Capture, &mode)?;
+    let capture = client.get_audiocaptureclient()?;
+    client.start_stream()?;
+    Ok(Some(Live { client, capture, device_id, pid }))
+}
+
+/// Moves every waiting packet into the source's queue.
+fn drain(live: &Live, raw: &mut VecDeque<u8>, src: &Source) -> Result<(), Box<dyn std::error::Error>> {
+    raw.clear();
+    // Each GetBuffer returns one ~10 ms packet: drain all that are waiting.
+    while live.capture.get_next_packet_size()?.unwrap_or(0) > 0 {
+        let before = raw.len();
+        let info = live.capture.read_from_device_to_deque(raw)?;
+        if info.flags.silent {
+            // The buffer contents are undefined for silent packets.
+            raw.range_mut(before..).for_each(|b| *b = 0);
+        }
+    }
+    if raw.len() < 4 {
+        return Ok(());
+    }
+    let mut q = src.queue.lock().unwrap();
+    let (a, b) = raw.as_slices();
+    let mut it = a.iter().chain(b.iter()).copied();
+    for _ in 0..raw.len() / 4 {
+        let v = [it.next().unwrap(), it.next().unwrap(), it.next().unwrap(), it.next().unwrap()];
+        q.push_back(f32::from_le_bytes(v));
+    }
+    if q.len() > MAX_QUEUE * 2 {
+        let excess = q.len() - MAX_QUEUE * 2;
+        q.drain(..excess);
+    }
     Ok(())
 }

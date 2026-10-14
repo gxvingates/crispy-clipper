@@ -401,7 +401,7 @@ function buildSettings() {
 }
 let devices = { outputs: [], inputs: [] };
 const SPECIAL = [
-  ['all-outputs', 'Everything I hear', 'Every active output device mixed together'],
+  ['all-outputs', 'Everything I hear', 'Every channel of the audio device you listen through (e.g. all BEACN / GoXLR / Wave Link channels)'],
   ['default-output', 'Default output', 'Whatever Windows is currently playing to'],
   ['game', 'Game only', "Only the detected game's sound (Windows 10 2004+)"],
   ['default-input', 'Microphone', 'Your Windows default mic'],
@@ -409,7 +409,7 @@ const SPECIAL = [
 function srcLabel(s) {
   const sp = SPECIAL.find(x => x[0] === s.id); if (sp) return [sp[1], sp[2]];
   const o = devices.outputs.find(d => d.id === s.id), i = devices.inputs.find(d => d.id === s.id);
-  if (o) return [o.name, 'Output device'];
+  if (o) return [o.name, 'Output device' + (o.interface ? ' · ' + o.interface : '')];
   if (i) return [i.name, 'Input device'];
   return [s.name || 'Unknown device', 'Not connected right now'];
 }
