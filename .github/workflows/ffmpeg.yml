@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Toolchain
-        run: sudo apt-get update && sudo apt-get install -y mingw-w64 nasm pkg-config make git
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 nasm pkg-config make git libz-mingw-w64-dev
 
       - name: GPU encoder headers (NVIDIA, AMD)
         run: |
@@ -43,7 +43,7 @@ jobs:
             --disable-ffplay --disable-ffprobe --disable-autodetect \
             --disable-everything \
             --enable-d3d11va --enable-dxva2 --enable-ffnvcodec --enable-nvenc --enable-amf --enable-mediafoundation \
-            --enable-w32threads --enable-swscale --enable-swresample \
+            --enable-w32threads --enable-swscale --enable-swresample --enable-zlib \
             --enable-indev=lavfi \
             --enable-filter=ddagrab,scale_d3d11,hwdownload,hwupload,hwmap,format,scale,null,aresample,aformat,anull,setpts,asetpts,copy \
             --enable-protocol=file,pipe \

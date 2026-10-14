@@ -21,7 +21,15 @@ pub struct Game {
 
 unsafe impl Send for Game {}
 
-fn exe_of(pid: u32) -> Option<String> {
+/// Install folders of the big game stores: anything launched from here is a game, even windowed.
+const GAME_LIBRARIES: &[&str] = &[
+    r"\steamapps\common\", r"\epic games\", r"\riot games\", r"\xboxgames\",
+    r"\windowsapps\microsoft.minecraft", r"\gog galaxy\games\", r"\ubisoft game launcher\games\",
+    r"\ea games\", r"\origin games\", r"\battle.net\games\", r"\rockstar games\",
+];
+
+/// Full lower-case exe path.
+fn exe_path(pid: u32) -> Option<String> {
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 520];
@@ -78,11 +86,13 @@ pub fn foreground_game(cfg: &Config) -> Option<Game> {
         if pid == 0 || pid == std::process::id() {
             return None;
         }
-        let exe = exe_of(pid)?;
+        let path = exe_path(pid)?;
+        let exe = path.rsplit('\\').next()?.to_string();
         if cfg.ignored_apps.iter().any(|a| a.eq_ignore_ascii_case(&exe)) {
             return None;
         }
-        let listed = cfg.game_apps.iter().any(|a| a.eq_ignore_ascii_case(&exe));
+        let listed = cfg.game_apps.iter().any(|a| a.eq_ignore_ascii_case(&exe))
+            || GAME_LIBRARIES.iter().any(|d| path.contains(d)) && big_enough(hwnd);
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
         if !listed && !covers_monitor(hwnd, monitor) {
             return None;
@@ -92,6 +102,12 @@ pub fn foreground_game(cfg: &Config) -> Option<Game> {
         let name = clean_name(&String::from_utf16_lossy(&title[..n as usize]), &exe);
         Some(Game { pid, exe, name, monitor })
     }
+}
+
+/// Skips splash screens and small helper windows of store-installed games.
+unsafe fn big_enough(hwnd: HWND) -> bool {
+    let mut r = RECT::default();
+    unsafe { GetClientRect(hwnd, &mut r) }.is_ok() && r.right - r.left >= 800 && r.bottom - r.top >= 500
 }
 
 unsafe fn covers_monitor(hwnd: HWND, monitor: HMONITOR) -> bool {

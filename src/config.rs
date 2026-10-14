@@ -45,7 +45,9 @@ ignored_apps = ["explorer.exe", "chrome.exe", "msedge.exe", "firefox.exe", "brav
   "vlc.exe", "mpv.exe", "mpc-hc64.exe", "potplayermini64.exe", "wmplayer.exe", "code.exe", "devenv.exe",
   "discord.exe", "obs64.exe", "applicationframehost.exe", "searchhost.exe", "lockapp.exe", "shellexperiencehost.exe",
   "startmenuexperiencehost.exe", "textinputhost.exe", "steamwebhelper.exe", "msedgewebview2.exe",
-  "crispyclipper.exe", "powerpnt.exe", "acrobat.exe", "spotify.exe", "netflix.exe", "screenclippinghost.exe"]
+  "crispyclipper.exe", "powerpnt.exe", "acrobat.exe", "spotify.exe", "netflix.exe", "screenclippinghost.exe",
+  "steam.exe", "epicgameslauncher.exe", "riotclientservices.exe", "riotclientux.exe", "riotclientuxrender.exe",
+  "battle.net.exe", "eadesktop.exe", "galaxyclient.exe", "upc.exe", "rockstarlauncher.exe", "unrealcefsubprocess.exe"]
 
 # Path to ffmpeg.exe. "ffmpeg" = use PATH, or ffmpeg.exe next to CrispyClipper.exe.
 ffmpeg = "ffmpeg"
