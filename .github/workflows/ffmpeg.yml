@@ -7,7 +7,7 @@ on:
     inputs:
       tag:
         description: Release tag to publish to (must match DOWNLOAD_URL in src/ffmpeg.rs)
-        default: ffmpeg-min-1
+        default: ffmpeg-min-2
       ffmpeg_ref:
         description: FFmpeg git tag
         default: n8.1
@@ -45,7 +45,7 @@ jobs:
             --enable-d3d11va --enable-dxva2 --enable-ffnvcodec --enable-nvenc --enable-amf --enable-mediafoundation \
             --enable-w32threads --enable-swscale --enable-swresample --enable-zlib \
             --enable-indev=lavfi \
-            --enable-filter=ddagrab,scale_d3d11,color,hwdownload,hwupload,hwmap,format,scale,null,aresample,aformat,anull,setpts,asetpts,copy \
+            --enable-filter=ddagrab,scale_d3d11,color,fps,tile,hwdownload,hwupload,hwmap,format,scale,null,aresample,aformat,anull,setpts,asetpts,copy \
             --enable-protocol=file,pipe \
             --enable-demuxer=mov,mpegts,pcm_f32le,image2,png_pipe,mjpeg \
             --enable-muxer=mp4,mov,mpegts,image2,null,pcm_f32le \
@@ -82,7 +82,7 @@ jobs:
         run: |
           $f = .\ffmpeg.exe -hide_banner -filters 2>&1 | Out-String
           $e = .\ffmpeg.exe -hide_banner -encoders 2>&1 | Out-String
-          foreach ($x in 'ddagrab','scale_d3d11','hwdownload') { if ($f -notmatch $x) { throw "missing filter $x" } }
+          foreach ($x in 'ddagrab','scale_d3d11','hwdownload','fps','tile') { if ($f -notmatch $x) { throw "missing filter $x" } }
           foreach ($x in 'h264_nvenc','hevc_amf','h264_mf','aac','mjpeg','png') { if ($e -notmatch $x) { throw "missing encoder $x" } }
           # End to end: screenshot-style PNG, then a thumbnail from it (no GPU on the runner).
           .\ffmpeg.exe -hide_banner -v error -f lavfi -i "color=c=red:s=320x240:d=1" -frames:v 1 -y test.png

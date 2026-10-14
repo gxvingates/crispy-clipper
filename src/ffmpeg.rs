@@ -9,7 +9,18 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Minimal FFmpeg built by this repo's CI (only what Crispy Clipper uses).
 pub const DOWNLOAD_URL: &str =
-    "https://github.com/gxvingates/crispy-clipper/releases/download/ffmpeg-min-1/ffmpeg.exe";
+    "https://github.com/gxvingates/crispy-clipper/releases/download/ffmpeg-min-2/ffmpeg.exe";
+/// Bump with DOWNLOAD_URL when the build gains components the app needs.
+pub const MANAGED_VERSION: &str = "2";
+
+fn version_marker() -> PathBuf {
+    config::data_dir().join("ffmpeg.version")
+}
+
+/// The app's own FFmpeg is from an older build (missing filters newer features need).
+pub fn managed_outdated() -> bool {
+    managed_path().exists() && std::fs::read_to_string(version_marker()).unwrap_or_default().trim() != MANAGED_VERSION
+}
 
 pub fn managed_path() -> PathBuf {
     config::data_dir().join("ffmpeg.exe")
@@ -44,6 +55,7 @@ pub fn download() -> Result<PathBuf, String> {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
     std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+    let _ = std::fs::write(version_marker(), MANAGED_VERSION);
     Ok(dest)
 }
 

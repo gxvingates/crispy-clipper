@@ -134,10 +134,9 @@ impl Recorder {
         };
         let mut v = Vec::new();
         if ffmpeg::takes_d3d11(encoder) {
+            // (FFmpeg 8.1's scale_d3d11 can't allocate textures on ddagrab's device, so
+            // downscaling goes through the CPU.)
             if let Some((w, h)) = scale {
-                if ffmpeg::has_filter(&self.ffmpeg, "scale_d3d11") {
-                    v.push(Some(format!("scale_d3d11=width={w}:height={h}")));
-                }
                 v.push(Some(format!("hwdownload,format=bgra,scale={w}:{h}:flags=bilinear,format=nv12")));
             }
             v.push(None);

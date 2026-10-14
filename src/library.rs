@@ -33,11 +33,13 @@ enum UserEvent {
     Eval(String),
 }
 
-pub fn run() {
+/// `view` = optional page to open on ("settings").
+pub fn run(view: Option<String>) {
     unsafe {
         let _ = CreateMutexW(None, true, w!("Local\\CrispyClipperLibrary"));
         if windows::Win32::Foundation::GetLastError() == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
             if let Ok(h) = FindWindowW(None, &HSTRING::from(TITLE)) {
+                // (An already-open window keeps its current page.)
                 let _ = ShowWindow(h, SW_RESTORE);
                 let _ = SetForegroundWindow(h);
             }
@@ -51,13 +53,14 @@ pub fn run() {
         .with_inner_size(LogicalSize::new(1240.0, 800.0))
         .with_min_inner_size(LogicalSize::new(760.0, 520.0))
         .with_window_icon(Icon::from_rgba(icon::rgba(64, true), 64, 64).ok())
+        .with_theme(Some(tao::window::Theme::Dark))
         .build(&event_loop)
         .expect("window");
     let hwnd = window.hwnd();
 
     let mut ctx = WebContext::new(Some(config::data_dir().join("webview")));
     let webview = WebViewBuilder::new_with_web_context(&mut ctx)
-        .with_url("http://app.localhost/")
+        .with_url(format!("http://app.localhost/#{}", view.unwrap_or_default()))
         .with_background_color((17, 17, 21, 255))
         .with_devtools(cfg!(debug_assertions))
         .with_browser_accelerator_keys(false)
@@ -158,8 +161,8 @@ fn serve(req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
             Some(p) if allowed(&p) => serve_file(req, &p),
             _ => respond(StatusCode::FORBIDDEN, "text/plain", b"forbidden".to_vec()),
         },
-        "/thumb" => match query_param(req, "path").map(PathBuf::from) {
-            Some(p) if allowed(&p) => match thumbnail(&p) {
+        route @ ("/thumb" | "/strip") => match query_param(req, "path").map(PathBuf::from) {
+            Some(p) if allowed(&p) => match preview(&p, &route[1..]) {
                 // The URL carries the clip's mtime, so it's safe to cache forever.
                 Some(t) => {
                     let mut r = serve_file(req, &t);
@@ -220,10 +223,11 @@ fn serve_file(req: &Request<Vec<u8>>, path: &Path) -> Response<Cow<'static, [u8]
 /// At most 3 thumbnail FFmpeg processes at once.
 static SLOTS: (Mutex<u32>, Condvar) = (Mutex::new(0), Condvar::new());
 
-fn thumbnail(path: &Path) -> Option<PathBuf> {
+/// A cached JPEG for `path`: "thumb" = poster frame, "strip" = 12-frame filmstrip for the trimmer.
+fn preview(path: &Path, kind: &str) -> Option<PathBuf> {
     let meta = path.metadata().ok()?;
     let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    let key = format!("{}|{}|{mtime}", path.display(), meta.len());
+    let key = format!("{kind}|{}|{}|{mtime}", path.display(), meta.len());
     let hash = key.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
     let dir = config::data_dir().join("thumbs");
     let out = dir.join(format!("{hash:016x}.jpg"));
@@ -232,6 +236,18 @@ fn thumbnail(path: &Path) -> Option<PathBuf> {
     }
     let _ = std::fs::create_dir_all(&dir);
     let ff = ffmpeg::locate(&cfg())?;
+    let is_video = mime(path) == "video/mp4";
+    let run = |pre: &[&str], vf: String| {
+        ffmpeg::command(&ff)
+            .args(pre)
+            .arg("-i")
+            .arg(path)
+            .args(["-frames:v", "1", "-vf", &vf, "-q:v", "4", "-y"])
+            .arg(&out)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
     {
         let mut n = SLOTS.0.lock().unwrap();
         while *n >= 3 {
@@ -239,30 +255,22 @@ fn thumbnail(path: &Path) -> Option<PathBuf> {
         }
         *n += 1;
     }
-    let is_video = mime(path) == "video/mp4";
-    let mut cmd = ffmpeg::command(&ff);
-    if is_video {
-        cmd.args(["-ss", "1"]);
+    match kind {
+        "strip" if is_video => {
+            let secs = mp4::info(path).map(|i| i.seconds).unwrap_or(30.0).max(1.0);
+            // Keyframes only (1 per second) keeps this fast even for long recordings.
+            let vf = format!("fps={:.6},scale=-2:120,tile=12x1", 12.0 / secs);
+            run(&["-skip_frame", "nokey"], vf);
+        }
+        _ => {
+            // Clips shorter than 1s: fall back to the first frame.
+            if !(is_video && run(&["-ss", "1"], "scale=640:-2".into())) {
+                run(&[], "scale=640:-2".into());
+            }
+        }
     }
-    let ok = cmd
-        .arg("-i")
-        .arg(path)
-        .args(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "5", "-y"])
-        .arg(&out)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
     *SLOTS.0.lock().unwrap() -= 1;
     SLOTS.1.notify_one();
-    // Clips shorter than 1s: retry from the first frame.
-    if !ok && is_video {
-        let _ = ffmpeg::command(&ff)
-            .arg("-i")
-            .arg(path)
-            .args(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "5", "-y"])
-            .arg(&out)
-            .status();
-    }
     out.exists().then_some(out)
 }
 

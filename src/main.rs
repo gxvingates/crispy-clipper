@@ -123,7 +123,8 @@ fn main() {
         );
     }
     if has("--library") {
-        return library::run();
+        let view = args.iter().position(|a| a == "--view").and_then(|i| args.get(i + 1)).cloned();
+        return library::run(view);
     }
     if has("--install") {
         // Silent install (no prompt), then launch the installed copy.
@@ -183,6 +184,13 @@ fn main() {
         }
     };
 
+    // Keep our own FFmpeg current (the user already agreed to download it once).
+    if ffmpeg::managed_outdated() {
+        match ffmpeg::download() {
+            Ok(_) => eprintln!("[app] updated ffmpeg to build {}", ffmpeg::MANAGED_VERSION),
+            Err(e) => eprintln!("[app] ffmpeg update failed: {e}"),
+        }
+    }
     // Prefer our own tested FFmpeg build; any other copy is only a fallback.
     let declined = config::data_dir().join("ffmpeg-declined");
     let fallback = ffmpeg::locate(&cfg);
