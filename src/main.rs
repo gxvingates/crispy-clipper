@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, LPARAM, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, LPARAM, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -48,12 +48,16 @@ pub fn message_box(text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
 }
 
 /// Single instance for the background recorder. With `wait`, waits for a restarting predecessor.
+///
+/// Decided by who *owns* the lock, not whether it exists: another process merely holding a
+/// handle to it (or a recorder that died) must not stop a new recorder from starting.
 fn take_instance_lock(wait: bool) -> bool {
     for _ in 0..if wait { 50 } else { 1 } {
         unsafe {
-            if let Ok(h) = CreateMutexW(None, true, w!("Local\\CrispyClipperRecorder")) {
-                if GetLastError() != ERROR_ALREADY_EXISTS {
-                    return true; // handle stays open for the life of the process
+            if let Ok(h) = CreateMutexW(None, false, w!("Local\\CrispyClipperRecorder")) {
+                let r = WaitForSingleObject(h, 0);
+                if r == WAIT_OBJECT_0 || r == WAIT_ABANDONED {
+                    return true; // owned by this (main) thread for the life of the process
                 }
                 let _ = CloseHandle(h);
             }

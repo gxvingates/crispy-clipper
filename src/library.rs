@@ -515,8 +515,21 @@ fn list_clips() -> Value {
     json!({ "items": items, "root": root.to_string_lossy() })
 }
 
+/// Whether a live recorder owns its lock. The handle is always closed again: keeping it open
+/// would make the lock outlive the recorder and block the next one from starting.
 fn recorder_running() -> bool {
-    unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, w!("Local\\CrispyClipperRecorder")).is_ok() }
+    use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::{ReleaseMutex, SYNCHRONIZATION_ACCESS_RIGHTS, WaitForSingleObject};
+    unsafe {
+        let access = SYNCHRONIZATION_ACCESS_RIGHTS(SYNCHRONIZATION_SYNCHRONIZE.0 | 0x0001); // + MUTEX_MODIFY_STATE
+        let Ok(h) = OpenMutexW(access, false, w!("Local\\CrispyClipperRecorder")) else { return false };
+        let owned_by_other = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+        if !owned_by_other {
+            let _ = ReleaseMutex(h); // we just took an abandoned/free lock: give it back
+        }
+        let _ = CloseHandle(h);
+        owned_by_other
+    }
 }
 
 fn start_recorder() {
