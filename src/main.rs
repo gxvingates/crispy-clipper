@@ -12,6 +12,7 @@ mod mp4;
 mod notify;
 mod recorder;
 mod ring;
+mod updater;
 
 use config::Config;
 use recorder::{Event, Recorder};
@@ -33,8 +34,9 @@ const WM_EVENT: u32 = WM_APP + 1;
 const WM_MENU: u32 = WM_APP + 2;
 const WM_RELOAD: u32 = WM_APP + 3;
 const WM_OPEN: u32 = WM_APP + 4;
+const WM_UPDATE: u32 = WM_APP + 5;
 
-const MENU: [&str; 6] = ["open", "clip", "record", "shot", "pause", "quit"];
+const MENU: [&str; 7] = ["open", "clip", "record", "shot", "pause", "update", "quit"];
 
 pub fn timestamp() -> String {
     let t = unsafe { GetLocalTime() };
@@ -122,6 +124,14 @@ fn main() {
             return;
         }
     }
+    if has("--update") {
+        // Scripted update: install the latest GitHub release over this exe (no restart).
+        match updater::check().and_then(|u| u.ok_or("already up to date".into())).and_then(|u| updater::install(&u)) {
+            Ok(p) => println!("updated {}", p.display()),
+            Err(e) => println!("no update: {e}"),
+        }
+        return;
+    }
     let background = has("--background");
     log_to_file();
     // Release builds abort on panic: get the reason into the log first.
@@ -170,45 +180,25 @@ fn main() {
         }
     };
 
-    // Keep our own FFmpeg current (the user already agreed to download it once).
-    if ffmpeg::managed_outdated() {
+    // The encoder is part of the app, like Medal's downloaded dependencies: fetched silently on
+    // first run and whenever this version needs a newer build. Any other FFmpeg is a fallback.
+    if !ffmpeg::managed_path().exists() || ffmpeg::managed_outdated() {
         match ffmpeg::download() {
-            Ok(_) => eprintln!("[app] updated ffmpeg to build {}", ffmpeg::MANAGED_VERSION),
-            Err(e) => eprintln!("[app] ffmpeg update failed: {e}"),
+            Ok(_) => eprintln!("[app] downloaded ffmpeg build {}", ffmpeg::MANAGED_VERSION),
+            Err(e) => eprintln!("[app] ffmpeg download failed: {e}"),
         }
     }
-    // Prefer our own tested FFmpeg build; any other copy is only a fallback.
-    let declined = config::data_dir().join("ffmpeg-declined");
-    let fallback = ffmpeg::locate(&cfg);
-    let ffmpeg_path = if ffmpeg::managed_path().exists() || install::is_dev_build() && fallback.is_some() {
-        fallback.unwrap()
-    } else if declined.exists() && fallback.is_some() {
-        fallback.unwrap()
-    } else {
-        let r = message_box(
-            "Crispy Clipper needs to download its video encoder (a minimal FFmpeg build, about 9 MB) \
-             from github.com/gxvingates/crispy-clipper.\n\nDownload it now?",
-            MB_OKCANCEL | MB_ICONINFORMATION,
+    let Some(ffmpeg_path) = ffmpeg::locate(&cfg) else {
+        message_box(
+            "Crispy Clipper couldn't download its video encoder (about 9 MB from GitHub).\n\n\
+             Check your internet connection; it will try again the next time it starts.",
+            MB_ICONERROR,
         );
-        match (r == IDOK).then(ffmpeg::download) {
-            Some(Ok(p)) => p,
-            Some(Err(e)) if fallback.is_none() => {
-                message_box(&format!("Download failed:\n{e}\n\nCheck your internet connection and try again."), MB_ICONERROR);
-                return;
-            }
-            None if fallback.is_none() => return,
-            res => {
-                if let Some(Err(e)) = res {
-                    eprintln!("[app] ffmpeg download failed: {e}");
-                } else {
-                    let _ = std::fs::write(&declined, "");
-                }
-                fallback.unwrap()
-            }
-        }
+        return;
     };
     eprintln!("[app] {} starting, ffmpeg {}", timestamp(), ffmpeg_path.display());
 
+    updater::cleanup();
     if !install::is_dev_build() {
         install::set_autostart(cfg.start_with_windows);
     }
@@ -290,9 +280,10 @@ fn main() {
     let record = item("record", format!("Start recording\t{}", cfg.record_hotkey));
     let shot = item("shot", format!("Screenshot\t{}", cfg.screenshot_hotkey));
     let pause = CheckMenuItem::with_id("pause", "Pause capturing", true, false, None);
+    let update = item("update", "Check for updates".into());
     let quit = item("quit", "Quit".into());
     let sep = PredefinedMenuItem::separator();
-    menu.append_items(&[&open, &sep, &clip, &record, &shot, &pause, &PredefinedMenuItem::separator(), &quit]).unwrap();
+    menu.append_items(&[&open, &sep, &clip, &record, &shot, &pause, &PredefinedMenuItem::separator(), &update, &quit]).unwrap();
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
         if let Some(i) = MENU.iter().position(|m| *m == e.id.0) {
             post(WM_MENU, i);
@@ -328,6 +319,28 @@ fn main() {
     if !background {
         open_library();
     }
+
+    // Updates: check GitHub shortly after start, then every 6 hours.
+    let found_update: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+    let mut announced: Option<String> = None;
+    if cfg.check_updates && !install::is_dev_build() {
+        let found = found_update.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(20));
+            loop {
+                match updater::check() {
+                    Ok(Some(u)) => {
+                        eprintln!("[update] v{} available", u.version);
+                        *found.lock().unwrap() = Some(u.version);
+                        post(WM_UPDATE, 0);
+                    }
+                    Ok(None) => {}
+                    Err(e) => eprintln!("[update] check failed: {e}"),
+                }
+                std::thread::sleep(Duration::from_secs(6 * 3600));
+            }
+        });
+    }
     unsafe { SetTimer(None, 0, 2000, None) }; // refreshes the tray status
     let mut shown_encoder_error = false;
     let mut last_capturing = None;
@@ -342,6 +355,18 @@ fn main() {
             },
             WM_MENU => match MENU[msg.wParam.0] {
                 "open" => open_library(),
+                "update" => {
+                    if found_update.lock().unwrap().is_some() {
+                        open_library(); // the app shows the update with an Update button
+                    } else {
+                        let found = found_update.clone();
+                        std::thread::spawn(move || {
+                            let r = updater::check();
+                            *found.lock().unwrap() = r.as_ref().ok().cloned().flatten().map(|u| u.version);
+                            post(WM_UPDATE, if r.is_ok() { 1 } else { 2 });
+                        });
+                    }
+                }
                 "clip" => rec.save_clip(),
                 "record" => rec.toggle_recording(),
                 "shot" => rec.screenshot(),
@@ -349,6 +374,22 @@ fn main() {
                 _ => break,
             },
             WM_OPEN => open_library(),
+            // wParam: 0 = background check, 1 = check the user asked for, 2 = that check failed.
+            WM_UPDATE => {
+                let ver = found_update.lock().unwrap().clone();
+                match (ver, msg.wParam.0) {
+                    (Some(v), w) => {
+                        let _ = update.set_text(format!("Update to v{v}…"));
+                        if w == 1 || announced.as_deref() != Some(v.as_str()) {
+                            notify(&format!("Update available: v{v} · open Crispy Clipper"), true, false);
+                            announced = Some(v);
+                        }
+                    }
+                    (None, 1) => notify("Crispy Clipper is up to date", true, false),
+                    (None, 2) => notify("Couldn't check for updates", false, false),
+                    _ => {}
+                }
+            }
             WM_EVENT => {
                 while let Ok(ev) = rx.try_recv() {
                     match ev {

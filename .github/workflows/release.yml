@@ -16,6 +16,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Tag must match the app version (the in-app updater compares them)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Cargo.toml says $v but the tag is $GITHUB_REF_NAME"; exit 1; }
       - run: cargo test --release
       - run: cargo build --release
       - uses: actions/upload-artifact@v4

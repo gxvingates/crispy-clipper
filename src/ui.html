@@ -86,6 +86,11 @@ nav.side { width: 236px; flex-shrink: 0; background: var(--bg2); border-right: 1
 .pulse.on { background: var(--ok); }
 .pulse.on::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--ok); opacity: 0; animation: ping 2s infinite; }
 @keyframes ping { 0% { transform: scale(.6); opacity: .8; } 100% { transform: scale(1.6); opacity: 0; } }
+.update-card { margin-top: 10px; padding: 13px 14px; border-radius: 12px; background: linear-gradient(135deg, rgba(255,122,61,.16), rgba(255,46,122,.12));
+  border: 1px solid rgba(255,90,60,.35); }
+.update-card b { display: block; font-size: 13px; }
+.update-card small { color: var(--dim); font-size: 12px; }
+.update-card .row-btns { display: flex; gap: 6px; margin-top: 10px; }
 .keys { display: grid; grid-template-columns: 1fr auto; gap: 7px 8px; margin-top: 12px; font-size: 12px; color: var(--dim); align-items: center; }
 
 main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative;
@@ -272,6 +277,10 @@ label.check .switch input:checked + span::before { transform: translateX(16px); 
     <div class="nav-item" id="navSet" onclick="showView('settings')"><span data-i="settings"></span>Settings</div>
     <div class="side-label">Games</div>
     <div id="games"></div>
+    <div class="update-card hidden" id="updateCard">
+      <b id="updTitle">Update available</b><small id="updSub"></small>
+      <div class="row-btns"><button class="btn sm primary" onclick="installUpdate()">Update now</button><button class="btn sm ghost" onclick="whatsNew()">What's new</button></div>
+    </div>
     <div class="status-card">
       <div class="status-row"><span class="pulse" id="pulse"></span><div><span id="stTitle">Checking…</span><small id="stSub"></small></div>
         <button class="btn sm primary hidden" id="startBtn" style="margin-left:auto" onclick="startRecorder()">Start</button></div>
@@ -784,7 +793,8 @@ function renderSettings() {
     ${row('Clips folder', esc(cfg.output_dir || 'Videos\\Crispy Clipper (default)'), `<div style="display:flex;gap:6px"><button class="btn" onclick="pickFolder()">${icon('folder')}Change</button>${cfg.output_dir ? `<button class="btn ghost" onclick="cfg.output_dir='';changed(true)">Default</button>` : ''}</div>`)}
     ${row('"Clip saved" popup', 'Shows over borderless and windowed games', sw('notify_overlay'))}
     ${row('Sound when saving', '', sw('notify_sound'))}
-    ${row('Start with Windows', 'Runs quietly in the tray', sw('start_with_windows'))}`)}
+    ${row('Start with Windows', 'Runs quietly in the tray', sw('start_with_windows'))}
+    ${row('Check for updates', 'Looks for new versions on GitHub and offers them here. Updating takes a few seconds and keeps your settings and clips', `<div style="display:flex;align-items:center;gap:10px"><button class="btn sm" onclick="checkUpdate(true)">Check now</button>${sw('check_updates')}</div>`)}`)}
   ${section('gamepad', 'Game detection', 'Fullscreen apps and anything installed by Steam, Epic, Riot, Xbox, EA, GOG or Ubisoft count as games', `
     ${row('Always treat as games', 'One exe name per line, e.g. windowed games', textList('game_apps'))}
     ${row('Never treat as games', 'One exe name per line', textList('ignored_apps'))}`)}
@@ -892,11 +902,31 @@ async function refreshStatus() {
     renderAbout();
   } catch { }
 }
+// ---------- updates (GitHub Releases) ----------
+let update = null;
+async function checkUpdate(manual) {
+  try {
+    const r = await call('checkUpdate'); update = r.update;
+    $('updateCard').classList.toggle('hidden', !update);
+    if (update) { $('updTitle').textContent = `Update available: v${update.version}`; $('updSub').textContent = `You have v${r.current}`; }
+    else if (manual) toast(`You're on the latest version (v${r.current})`);
+  } catch (e) { if (manual) toast("Couldn't check for updates: " + e, true); }
+}
+async function installUpdate() {
+  if (!update) return;
+  if (!await ask(`Update to v${update.version}?`, 'Crispy Clipper downloads the new version from GitHub and restarts (about 5 seconds). Your settings and clips stay as they are.', 'Update')) return;
+  try { await busy(`Updating to v${update.version}…`, () => call('installUpdate')); }
+  catch (e) { toast('Update failed: ' + e, true); }
+}
+function whatsNew() { if (update?.page) call('openUrl', { url: update.page }); }
+
 async function startRecorder() { await call('startRecorder'); setTimeout(refreshStatus, 1500); }
 
 call('config').then(c => { cfg = c; saved = JSON.parse(JSON.stringify(c)); render(); refreshStatus(); if (location.hash.startsWith('#settings')) { showView('settings'); setTimeout(() => $('s-' + location.hash.split('-')[1])?.scrollIntoView(), 1500); } });
 load();
 setInterval(refreshStatus, 5000);
+setTimeout(() => { if (saved?.check_updates !== false) checkUpdate(false); }, 1500);
+setInterval(() => { if (saved?.check_updates !== false) checkUpdate(false); }, 30 * 60 * 1000);
 // Pick up new clips while the window is open.
 setInterval(() => { if ($('editor').classList.contains('hidden') && !document.hidden) load(); }, 4000);
 </script>

@@ -62,6 +62,8 @@ multiple_audio_tracks = true
 notify_overlay = true
 notify_sound = true
 start_with_windows = true
+# Look for new versions on GitHub and offer them in the app.
+check_updates = true
 
 # Lower-case exe names. "game_apps" are always treated as games; "ignored_apps" never are,
 # even when fullscreen.
@@ -122,6 +124,7 @@ pub struct Config {
     pub notify_overlay: bool,
     pub notify_sound: bool,
     pub start_with_windows: bool,
+    pub check_updates: bool,
     pub game_apps: Vec<String>,
     pub ignored_apps: Vec<String>,
     pub ffmpeg: String,

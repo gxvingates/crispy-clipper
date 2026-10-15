@@ -1,20 +1,30 @@
 # Crispy Clipper
 
 Save the last 30 seconds of your game with one key. Crispy Clipper runs entirely on your own PC: there's no account,
-no uploads, no ads and no telemetry. It's a ~1.5 MB app, and it uses nothing while you aren't playing.
+no uploads, no ads and no telemetry. It's a ~3 MB app, and it uses nothing while you aren't playing.
 
 ## Install
 
 1. Download **CrispyClipper.exe** from the [latest release](https://github.com/gxvingates/crispy-clipper/releases/latest).
 2. Double-click it and choose **Yes** to install. It adds itself to the Start menu and desktop and starts with
    Windows.
-3. On first run it downloads its video encoder (a 9 MB stripped-down FFmpeg, built by this repo's
-   [workflow](.github/workflows/ffmpeg.yml)).
+3. On first run it quietly downloads its video encoder (a 9 MB stripped-down FFmpeg, built by this repo's
+   [workflow](.github/workflows/ffmpeg.yml)). It's only fetched again if a new version needs a newer encoder.
 
 Windows may show "Windows protected your PC" because the exe isn't code-signed: click **More info → Run anyway**.
 
 Requirements: Windows 10 or 11, 64-bit. Any NVIDIA, AMD or Intel GPU works; without a hardware encoder it falls back to
 Windows' built-in one.
+
+## Updates
+
+The app checks this repo's latest GitHub release in the background. When there's a new version you get a popup, an
+**Update to vX** item in the tray menu and an **Update now** button in the app. Updating downloads the new
+`CrispyClipper.exe`, checks it against the SHA-256 GitHub publishes for it, swaps it in and restarts. Settings, clips
+and the encoder stay as they are. (You can turn checking off in Settings.)
+
+To publish a release: bump `version` in `Cargo.toml`, commit, then push a matching tag (`git tag v0.2.0 && git push
+origin v0.2.0`). The Release workflow builds the exe and attaches it.
 
 ## Use
 

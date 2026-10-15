@@ -349,6 +349,28 @@ fn run_command(cmd: &str, args: &Value) -> Result<Value, String> {
         "list" => Ok(list_clips()),
         "status" => Ok(status()),
         "runningApps" => Ok(json!(crate::audio::running_apps())),
+        "checkUpdate" => {
+            let u = crate::updater::check()?;
+            Ok(json!({ "current": crate::updater::current(), "update": u }))
+        }
+        "installUpdate" => {
+            let u = crate::updater::check()?.ok_or("You're already on the latest version")?;
+            let exe = crate::updater::install(&u)?;
+            // Restart everything on the new version: the recorder, then this window.
+            stop_recorder();
+            let _ = std::process::Command::new(exe).spawn();
+            std::process::exit(0);
+        }
+        "openUrl" => {
+            let url = args["url"].as_str().unwrap_or("");
+            if !url.starts_with("https://github.com/gxvingates/crispy-clipper") {
+                return Err("blocked".into());
+            }
+            unsafe {
+                ShellExecuteW(None, w!("open"), &HSTRING::from(url), None, None, SW_SHOWNORMAL);
+            }
+            Ok(Value::Null)
+        }
         "audioDevices" => {
             let (outputs, inputs) = crate::audio::list_devices();
             Ok(json!({ "outputs": outputs, "inputs": inputs }))
