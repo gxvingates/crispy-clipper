@@ -274,11 +274,9 @@ impl Recorder {
                 let mut game = self.game.lock().unwrap();
                 if game.as_ref().is_some_and(|g| !games::alive(g.pid)) {
                     *game = None;
-                    self.mixer.game_pid.store(0, Ordering::SeqCst);
                 }
                 match game.is_none().then(|| games::foreground_game(&self.cfg)).flatten() {
                     Some(g) => {
-                        self.mixer.game_pid.store(g.pid, Ordering::SeqCst);
                         let name = g.name.clone();
                         *game = Some(g);
                         Some(name)

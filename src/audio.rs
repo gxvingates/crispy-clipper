@@ -1,10 +1,6 @@
-//! Audio, modelled on Medal's recorder:
-//! - "split" mode records specific programs through Windows process loopback (the game, Discord,
-//!   apps you add), so it doesn't matter which output device or mixer channel they play on, and
-//!   music or videos elsewhere aren't recorded. "all" mode records whole output devices.
-//! - The mic has its own chain: mono fix, noise suppression (RNNoise, like Medal's "scope"),
-//!   noise gate and push-to-talk.
-//! - Besides the full mix, each category (game, mic, Discord) can be written to its own track.
+//! Audio: the output devices (loopback) and input devices you pick in Settings, each with its own
+//! volume. Inputs go through the mic chain: mono fix, auto level, noise suppression (RNNoise),
+//! noise gate and push-to-talk. Besides the full mix, every device can get its own track.
 //!
 //! Everything is mixed into a clock-driven 48 kHz f32 stream (2 channels per track) for
 //! FFmpeg's stdin. Devices are only held while a mixer is pumping.
@@ -17,22 +13,15 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
-use windows::Win32::Foundation::CloseHandle;
-use windows::Win32::System::Diagnostics::ToolHelp::*;
 
 pub const RATE: u32 = 48_000;
 const CH: usize = 2;
 // Drop audio older than this so a stalled source can't build up lag.
 const MAX_QUEUE: usize = RATE as usize * CH / 5; // 200 ms
 const PREBUFFER: usize = RATE as usize * CH / 25; // 40 ms
-const DISCORD: &[&str] = &["discord.exe", "discordptb.exe", "discordcanary.exe"];
 
 #[derive(Clone, PartialEq, Debug)]
 enum Kind {
-    /// The detected game's process tree.
-    Game,
-    /// The oldest running process with one of these exe names, and its children.
-    App(Vec<String>),
     DefaultOutput,
     Output(String),
     /// Microphone: None = Windows default.
@@ -69,42 +58,6 @@ pub fn list_devices() -> (Vec<DeviceInfo>, Vec<DeviceInfo>) {
             .collect()
     };
     (list(Direction::Render), list(Direction::Capture))
-}
-
-/// (pid, parent pid, lower-case exe) for every running process.
-fn processes() -> Vec<(u32, u32, String)> {
-    let mut out = Vec::new();
-    unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
-        let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
-        let mut ok = Process32FirstW(snap, &mut e).is_ok();
-        while ok {
-            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-            out.push((e.th32ProcessID, e.th32ParentProcessID, String::from_utf16_lossy(&e.szExeFile[..len]).to_lowercase()));
-            ok = Process32NextW(snap, &mut e).is_ok();
-        }
-        let _ = CloseHandle(snap);
-    }
-    out
-}
-
-/// The top process of an app (e.g. Discord's main process, whose children play the audio).
-fn root_pid(names: &[String]) -> Option<u32> {
-    let procs = processes();
-    let ours: HashMap<u32, u32> = procs.iter().filter(|p| names.contains(&p.2)).map(|p| (p.0, p.1)).collect();
-    ours.iter().find(|(_, parent)| !ours.contains_key(parent)).map(|(pid, _)| *pid)
-}
-
-/// Programs currently playing (or able to play) audio, for the "add an app" list.
-pub fn running_apps() -> Vec<String> {
-    let mut v: Vec<String> = processes()
-        .into_iter()
-        .map(|p| p.2)
-        .filter(|n| n.ends_with(".exe") && !["svchost.exe", "crispyclipper.exe", "ffmpeg.exe", "conhost.exe"].contains(&n.as_str()))
-        .collect();
-    v.sort();
-    v.dedup();
-    v
 }
 
 /// Mic processing, applied as audio arrives.
@@ -253,8 +206,6 @@ pub struct Mixer {
     /// Track names; index 0 is the full mix.
     pub tracks: Vec<String>,
     active: Arc<AtomicU64>,
-    /// Process whose audio is captured as "game" (0 = none).
-    pub game_pid: Arc<AtomicU32>,
 }
 
 fn pct(v: u32) -> f32 {
@@ -262,60 +213,46 @@ fn pct(v: u32) -> f32 {
 }
 
 fn volumes(cfg: &Config) -> HashMap<String, f32> {
-    let mut m = HashMap::from([
-        ("game".to_string(), pct(cfg.game_volume)),
-        ("discord".to_string(), pct(cfg.discord_volume)),
-        ("pc".to_string(), pct(cfg.pc_volume)),
-        ("mic".to_string(), pct(cfg.mic_volume)),
-    ]);
-    for a in &cfg.extra_apps {
-        m.insert(format!("app:{}", a.exe.to_lowercase()), pct(a.volume));
-    }
-    m
+    let outs = cfg.audio_outputs.iter().map(|d| (format!("out:{}", d.id), pct(d.volume)));
+    let ins = cfg.audio_inputs.iter().map(|d| (format!("in:{}", d.id), pct(d.volume)));
+    outs.chain(ins).collect()
+}
+
+/// Short track name from a device name: "Game (BEACN Mix Create)" -> "Game".
+fn track_name(name: &str) -> String {
+    let n = name.split(" (").next().unwrap_or(name).trim();
+    if n.is_empty() { name.to_string() } else { n.to_string() }
 }
 
 impl Mixer {
     pub fn new(cfg: &Config) -> Mixer {
-        let mut plan: Vec<(String, Kind, Option<&str>)> = Vec::new();
-        if cfg.audio_mode == "all" {
-            for d in &cfg.pc_audio_devices {
-                let kind = if d == "auto" { Kind::DefaultOutput } else { Kind::Output(d.clone()) };
-                plan.push(("pc".into(), kind, Some("PC Audio")));
-            }
-        } else {
-            if cfg.game_audio {
-                plan.push(("game".into(), Kind::Game, Some("Game")));
-            }
-            if cfg.discord_audio {
-                plan.push(("discord".into(), Kind::App(DISCORD.iter().map(|s| s.to_string()).collect()), Some("Discord")));
-            }
-            for a in &cfg.extra_apps {
-                let exe = a.exe.to_lowercase();
-                plan.push((format!("app:{exe}"), Kind::App(vec![exe]), None));
-            }
+        let mut plan: Vec<(String, Kind, String)> = Vec::new();
+        for d in &cfg.audio_outputs {
+            let kind = if d.id == "auto" { Kind::DefaultOutput } else { Kind::Output(d.id.clone()) };
+            plan.push((format!("out:{}", d.id), kind, track_name(&d.name)));
         }
-        if cfg.mic_enabled {
-            let dev = (cfg.mic_device != "auto").then(|| cfg.mic_device.clone());
-            plan.push(("mic".into(), Kind::Input(dev), Some("Mic")));
+        for d in &cfg.audio_inputs {
+            let kind = Kind::Input((d.id != "auto").then(|| d.id.clone()));
+            plan.push((format!("in:{}", d.id), kind, track_name(&d.name)));
         }
 
-        // Track 0 = everything; then one per category, when there's more than one category.
+        // Track 0 = everything; then one per device (when there's more than one).
         let mut tracks = vec!["All Audio".to_string()];
-        let categories: Vec<&str> = plan.iter().filter_map(|p| p.2).fold(Vec::new(), |mut v, t| {
-            if !v.contains(&t) {
-                v.push(t);
-            }
-            v
-        });
-        let separate = cfg.multiple_audio_tracks && categories.len() > 1;
-        if separate {
-            tracks.extend(categories.iter().map(|s| s.to_string()));
-        }
+        let separate = cfg.multiple_audio_tracks && plan.len() > 1;
         let vols = volumes(cfg);
         let sources: Vec<Arc<Source>> = plan
             .into_iter()
-            .map(|(key, kind, cat)| {
-                let track = cat.filter(|_| separate).and_then(|c| tracks.iter().position(|t| t == c));
+            .map(|(key, kind, name)| {
+                let track = separate.then(|| {
+                    let mut n = name.clone();
+                    let mut i = 2;
+                    while tracks.contains(&n) {
+                        n = format!("{name} {i}");
+                        i += 1;
+                    }
+                    tracks.push(n);
+                    tracks.len() - 1
+                });
                 let mic = matches!(kind, Kind::Input(_)).then(|| Mutex::new(MicChain::new(cfg)));
                 let volume = AtomicU32::new(vols.get(&key).copied().unwrap_or(1.0).to_bits());
                 eprintln!("[audio] source {key} {kind:?} track {track:?}");
@@ -324,11 +261,10 @@ impl Mixer {
             .collect();
 
         let active = Arc::new(AtomicU64::new(0));
-        let game_pid = Arc::new(AtomicU32::new(0));
         // One thread services every source: ~100 wake-ups/s total.
-        let (s, a, p) = (sources.clone(), active.clone(), game_pid.clone());
-        thread::spawn(move || capture_loop(s, a, p));
-        Mixer { sources, tracks, active, game_pid }
+        let (s, a) = (sources.clone(), active.clone());
+        thread::spawn(move || capture_loop(s, a));
+        Mixer { sources, tracks, active }
     }
 
     /// Applies new volumes immediately (no restart, like Medal's sliders).
@@ -432,7 +368,6 @@ struct Live {
     client: wasapi::AudioClient,
     capture: wasapi::AudioCaptureClient,
     device_id: String,
-    pid: u32,
 }
 
 impl Drop for Live {
@@ -449,7 +384,7 @@ struct Target {
     last_error: String,
 }
 
-fn capture_loop(sources: Vec<Arc<Source>>, active: Arc<AtomicU64>, game_pid: Arc<AtomicU32>) {
+fn capture_loop(sources: Vec<Arc<Source>>, active: Arc<AtomicU64>) {
     let _ = wasapi::initialize_mta();
     let mut targets: Vec<Target> = sources
         .into_iter()
@@ -483,15 +418,14 @@ fn capture_loop(sources: Vec<Arc<Source>>, active: Arc<AtomicU64>, game_pid: Arc
                 if Instant::now() < t.retry_at {
                     continue;
                 }
-                match open(&t.src.kind, &enumerator, game_pid.load(Ordering::SeqCst)) {
+                match open(&t.src.kind, &enumerator) {
                     Ok(Some(l)) => {
-                        eprintln!("[audio] {} capturing (pid {})", t.src.key, l.pid);
+                        eprintln!("[audio] {} capturing", t.src.key);
                         t.live = Some(l);
                         t.failures = 0;
                         t.last_error.clear();
                         t.src.queue.lock().unwrap().clear();
                     }
-                    // Program not running (yet): look again shortly.
                     Ok(None) => t.retry_at = Instant::now() + Duration::from_secs(2),
                     Err(e) => {
                         let e = e.to_string();
@@ -512,11 +446,9 @@ fn capture_loop(sources: Vec<Arc<Source>>, active: Arc<AtomicU64>, game_pid: Arc
                 t.retry_at = Instant::now() + Duration::from_secs(1);
                 continue;
             }
-            // Reopen when the target moves: default device changed, game changed, app restarted.
+            // Reopen when the Windows default device changes.
             if check {
                 let changed = match &t.src.kind {
-                    Kind::Game => game_pid.load(Ordering::SeqCst) != live.pid,
-                    Kind::App(_) => !crate::games::alive(live.pid),
                     Kind::DefaultOutput | Kind::Input(None) => {
                         let dir = if t.src.kind == Kind::DefaultOutput { Direction::Render } else { Direction::Capture };
                         enumerator.get_default_device(&dir).and_then(|d| d.get_id()).map(|id| id != live.device_id).unwrap_or(true)
@@ -531,29 +463,23 @@ fn capture_loop(sources: Vec<Arc<Source>>, active: Arc<AtomicU64>, game_pid: Arc
     }
 }
 
-/// Opens a capture stream (loopback for programs and outputs). Ok(None) = nothing to capture yet.
-fn open(kind: &Kind, enumerator: &DeviceEnumerator, game_pid: u32) -> Result<Option<Live>, Box<dyn std::error::Error>> {
+/// Opens a capture stream (loopback for outputs).
+fn open(kind: &Kind, enumerator: &DeviceEnumerator) -> Result<Option<Live>, Box<dyn std::error::Error>> {
     let fmt = WaveFormat::new(32, 32, &SampleType::Float, RATE as usize, CH, None);
     let mode = StreamMode::PollingShared { autoconvert: true, buffer_duration_hns: 2_000_000 };
-    let (mut client, device_id, pid) = match kind {
-        Kind::Game if game_pid == 0 => return Ok(None),
-        Kind::Game => (wasapi::AudioClient::new_application_loopback_client(game_pid, true)?, String::new(), game_pid),
-        Kind::App(names) => match root_pid(names) {
-            None => return Ok(None),
-            Some(pid) => (wasapi::AudioClient::new_application_loopback_client(pid, true)?, String::new(), pid),
-        },
-        Kind::Output(id) | Kind::Input(Some(id)) => (enumerator.get_device(id)?.get_iaudioclient()?, id.clone(), 0),
+    let (mut client, device_id) = match kind {
+        Kind::Output(id) | Kind::Input(Some(id)) => (enumerator.get_device(id)?.get_iaudioclient()?, id.clone()),
         Kind::DefaultOutput | Kind::Input(None) => {
             let dir = if *kind == Kind::DefaultOutput { Direction::Render } else { Direction::Capture };
             let d = enumerator.get_default_device(&dir)?;
-            (d.get_iaudioclient()?, d.get_id()?, 0)
+            (d.get_iaudioclient()?, d.get_id()?)
         }
     };
     // Direction::Capture on an output device (or a process client) = loopback.
     client.initialize_client(&fmt, &Direction::Capture, &mode)?;
     let capture = client.get_audiocaptureclient()?;
     client.start_stream()?;
-    Ok(Some(Live { client, capture, device_id, pid }))
+    Ok(Some(Live { client, capture, device_id }))
 }
 
 /// Moves every waiting packet into the source's queue (through the mic chain for mics).

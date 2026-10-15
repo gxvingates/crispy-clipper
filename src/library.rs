@@ -348,7 +348,6 @@ fn run_command(cmd: &str, args: &Value) -> Result<Value, String> {
     match cmd {
         "list" => Ok(list_clips()),
         "status" => Ok(status()),
-        "runningApps" => Ok(json!(crate::audio::running_apps())),
         "checkUpdate" => {
             let u = crate::updater::check()?;
             Ok(json!({ "current": crate::updater::current(), "update": u }))

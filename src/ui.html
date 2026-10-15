@@ -716,7 +716,7 @@ async function compressCurrent(mb) {
 }
 
 // ---------- settings (saved as you change them, like Medal) ----------
-let devices = { outputs: [], inputs: [] }, apps = [];
+let devices = { outputs: [], inputs: [] };
 const opt = (v, l, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`;
 const row = (label, hint, control) => `<div class="row"><div class="lbl"><b>${label}</b>${hint ? `<small>${hint}</small>` : ''}</div>${control}</div>`;
 const pick = (k, opts) => `<select class="field" data-k="${k}">${opts.map(([v, l]) => opt(v, l, cfg[k])).join('')}</select>`;
@@ -734,37 +734,38 @@ const srcRow = (ico, name, hint, control) => `<div class="row"><div class="src-i
 const dim = on => on ? '' : ' style="opacity:.45;pointer-events:none"';
 const withToggle = (inner, k) => `<div style="display:flex;align-items:center;gap:14px"><span${dim(cfg[k])}>${inner}</span>${sw(k)}</div>`;
 
+// One row per device: switch it on to record it, with its own volume. Selected devices come first.
+function deviceRows(kind) {
+  const key = kind === 'out' ? 'audio_outputs' : 'audio_inputs';
+  const list = kind === 'out' ? devices.outputs : devices.inputs;
+  const sel = cfg[key] || [];
+  const auto = kind === 'out' ? ['auto', 'Default output', 'Follows your Windows default output'] : ['auto', 'Default microphone', 'Follows your Windows default microphone'];
+  let all = [auto, ...list.map(d => [d.id, d.name, d.interface || ''])];
+  // Devices you picked that aren't connected right now still show (and stay picked).
+  sel.forEach(d => { if (!all.some(a => a[0] === d.id)) all.push([d.id, d.name || 'Unknown device', 'Not connected right now']); });
+  const isOn = id => sel.some(d => d.id === id);
+  all.sort((a, b) => isOn(b[0]) - isOn(a[0]));
+  const ico = kind === 'out' ? 'speaker' : 'mic';
+  return all.map(([id, name, hint]) => {
+    const on = isOn(id), d = sel.find(x => x.id === id);
+    const v = d ? d.volume : 100, max = kind === 'in' ? 300 : 200;
+    return `<div class="row"><div class="src-ico">${icon(ico)}</div><div class="lbl"><b>${esc(name.split(' (')[0] || name)}</b>${hint ? `<small>${esc(hint)}</small>` : ''}</div>
+      <div style="display:flex;align-items:center;gap:14px"><span${dim(on)}><div class="range-wrap" style="width:240px"><input type="range" min="0" max="${max}" step="5" value="${v}" data-dvol="${kind}" data-id="${esc(id)}"><output style="width:46px">${v}%</output></div></span>
+      <label class="switch"><input type="checkbox" data-dsel="${kind}" data-id="${esc(id)}" data-name="${esc(name)}" ${on ? 'checked' : ''}><span></span></label></div></div>`;
+  }).join('');
+}
 function audioHtml() {
-  const split = cfg.audio_mode !== 'all';
-  let h = row('What to record', split ? 'Only the programs below are recorded, whatever device or mixer channel they play on. Music and videos you play elsewhere stay out of your clips.'
-    : 'Records everything playing on the chosen output devices.', seg('audio_mode', [['split', 'Split by app'], ['all', 'All PC audio']]));
-  if (split) {
-    h += srcRow('gamepad', 'Game audio', 'The game you are playing', withToggle(vol('game_volume'), 'game_audio'));
-    h += srcRow('speaker', 'Discord', 'Voice chat', withToggle(vol('discord_volume'), 'discord_audio'));
-    (cfg.extra_apps || []).forEach((a, n) => {
-      h += srcRow('layers', esc(a.exe), 'Added app', `<div style="display:flex;align-items:center;gap:6px"><div class="range-wrap" style="width:240px"><input type="range" min="0" max="200" step="5" value="${a.volume}" data-app="${n}"><output style="width:46px">${a.volume}%</output></div><button class="btn icon-btn ghost" data-rmapp="${n}" title="Remove">${icon('x')}</button></div>`);
-    });
-    const have = new Set((cfg.extra_apps || []).map(a => a.exe));
-    h += srcRow('plus', 'Add an app', 'Record another program too, e.g. a music player', `<select class="field" id="addApp"><option value="">Choose a running app…</option>${apps.filter(a => !have.has(a)).map(a => `<option>${esc(a)}</option>`).join('')}</select>`);
-  } else {
-    h += srcRow('speaker', 'PC audio', '', vol('pc_volume'));
-    const sel = new Set(cfg.pc_audio_devices || []);
-    const devs = [['auto', 'Default output', 'Follows your Windows default'], ...devices.outputs.map(d => [d.id, d.name, d.interface])];
-    h += `<div class="row" style="align-items:flex-start"><div class="lbl"><b>Output devices</b><small>Pick every output you want in clips (e.g. each mixer channel)</small></div><div style="display:grid;gap:10px;min-width:320px">` +
-      devs.map(([id, name, hint]) => `<label class="check" style="color:var(--text)"><span class="switch"><input type="checkbox" data-dev="${esc(id)}" ${sel.has(id) ? 'checked' : ''}><span></span></span>${esc(name)}${hint ? ` <small style="color:var(--dimmer)">${esc(hint)}</small>` : ''}</label>`).join('') + '</div></div>';
-  }
-  h += row('Separate audio tracks', 'Also saves game, mic and Discord as their own tracks, so you can rebalance them in the editor afterwards', sw('multiple_audio_tracks'));
-  return h;
+  return `<div class="row"><div class="lbl"><b>Outputs</b><small>Switch on everything you want in clips. With a mixer like BEACN or GoXLR, pick the channels your game and chat play on. Each one gets its own volume and its own track</small></div></div>`
+    + deviceRows('out')
+    + row('Separate audio tracks', 'Saves every device as its own track next to the full mix, so you can rebalance them in the editor afterwards', sw('multiple_audio_tracks'));
 }
 function micHtml() {
-  return row('Record microphone', '', sw('mic_enabled')) + `<div${dim(cfg.mic_enabled)}>` +
-    row('Microphone', '', `<select class="field" data-k="mic_device">${opt('auto', 'Default microphone', cfg.mic_device)}${devices.inputs.map(d => opt(d.id, d.name, cfg.mic_device)).join('')}</select>`) +
-    row('Volume', 'Boost a quiet mic up to 300%', vol('mic_volume', 300)) +
+  return deviceRows('in') +
     row('Auto level', 'Brings a quiet voice up to a normal speaking level without boosting background noise', sw('mic_auto_level')) +
     row('Mono', 'Fixes mics that only come in on one side (common with audio interfaces)', sw('mic_mono')) +
     row('Noise suppression', 'Removes keyboard, fan and background noise', sw('mic_noise_suppression')) +
     row('Noise gate', 'Mutes the mic below a level', withToggle(rng('mic_noise_gate_db', -80, -20, 1, v => v + ' dB'), 'mic_noise_gate')) +
-    row('Push to talk', 'Only record the mic while a key or mouse button is held', withToggle(hotkey('push_to_talk_key', true), 'push_to_talk')) + '</div>';
+    row('Push to talk', 'Only record the mic while a key or mouse button is held', withToggle(hotkey('push_to_talk_key', true), 'push_to_talk'));
 }
 
 function renderSettings() {
@@ -784,7 +785,7 @@ function renderSettings() {
     ${row('Monitor', '', pick('monitor', [[-1, 'Where the game is'], [0, 'Monitor 1'], [1, 'Monitor 2'], [2, 'Monitor 3']]))}
     ${row('Show mouse cursor', '', sw('show_cursor'))}`)}
   ${section('speaker', 'Audio', 'What ends up in your clips', audioHtml())}
-  ${section('mic', 'Microphone', 'Your voice, kept separate from game audio', micHtml())}
+  ${section('mic', 'Microphones', 'Inputs to record, and how your voice is processed', micHtml())}
   ${section('keyboard', 'Hotkeys', 'Click a shortcut, then press the keys you want', `
     ${row('Save clip', `Saves the last ${cfg.clip_seconds} seconds`, hotkey('clip_hotkey'))}
     ${row('Start / stop recording', 'Records until you press it again', hotkey('record_hotkey'))}
@@ -811,13 +812,25 @@ function changed(rerender) {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveSettings, 350);
 }
-const RERENDER = new Set(['audio_mode', 'game_audio', 'discord_audio', 'mic_enabled', 'mic_noise_gate', 'push_to_talk', 'clip_seconds', 'max_bitrate_mbps']);
+const RERENDER = new Set(['mic_noise_gate', 'push_to_talk', 'clip_seconds', 'max_bitrate_mbps']);
 $('sform').addEventListener('input', e => {
   const el = e.target;
-  if (el.dataset.app !== undefined) { const a = cfg.extra_apps[+el.dataset.app]; a.volume = +el.value; el.nextElementSibling.textContent = a.volume + '%'; setRangeFill(el); return changed(); }
-  if (el.dataset.dev !== undefined) {
-    const set = new Set(cfg.pc_audio_devices); el.checked ? set.add(el.dataset.dev) : set.delete(el.dataset.dev);
-    cfg.pc_audio_devices = [...set]; return changed();
+  if (el.dataset.dsel) {
+    const key = el.dataset.dsel === 'out' ? 'audio_outputs' : 'audio_inputs';
+    const id = el.dataset.id;
+    cfg[key] = (cfg[key] || []).filter(d => d.id !== id);
+    if (el.checked) {
+      const v = +el.closest('.row').querySelector('[data-dvol]').value;
+      cfg[key].push({ id, name: el.dataset.name, volume: v });
+    }
+    return changed(true);
+  }
+  if (el.dataset.dvol) {
+    const key = el.dataset.dvol === 'out' ? 'audio_outputs' : 'audio_inputs';
+    const d = (cfg[key] || []).find(x => x.id === el.dataset.id);
+    el.nextElementSibling.textContent = el.value + '%'; setRangeFill(el);
+    if (d) { d.volume = +el.value; changed(); }
+    return;
   }
   const k = el.dataset.k; if (!k) return;
   let v = el.type === 'checkbox' ? el.checked : el.dataset.list ? el.value.split(/[\n,]/).map(s => s.trim().toLowerCase()).filter(Boolean) : el.value;
@@ -830,13 +843,11 @@ $('sform').addEventListener('input', e => {
   changed(el.type === 'checkbox' && RERENDER.has(k));
 });
 $('sform').addEventListener('change', e => {
-  if (e.target.id === 'addApp' && e.target.value) { cfg.extra_apps.push({ exe: e.target.value, volume: 100 }); changed(true); }
-  else if (e.target.tagName === 'SELECT' && RERENDER.has(e.target.dataset.k)) changed(true);
+  if (e.target.tagName === 'SELECT' && RERENDER.has(e.target.dataset.k)) changed(true);
 });
 $('sform').addEventListener('click', e => {
   const b = e.target.closest('[data-v]'); const segEl = b?.closest('[data-seg]');
   if (segEl) { const k = segEl.dataset.seg; cfg[k] = typeof saved[k] === 'number' ? +b.dataset.v : b.dataset.v; segEl.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); return changed(RERENDER.has(k)); }
-  const rm = e.target.closest('[data-rmapp]'); if (rm) { cfg.extra_apps.splice(+rm.dataset.rmapp, 1); return changed(true); }
   const h = e.target.closest('[data-hk]'); if (h && !h.classList.contains('listening')) { h.classList.add('listening'); h.textContent = h.dataset.mouse ? 'Press a key or mouse button…' : 'Press keys… (Esc cancels, Backspace clears)'; h.focus(); }
 });
 $('sform').addEventListener('mousedown', e => {
@@ -885,7 +896,7 @@ function showView(v) {
   $('navSet').classList.toggle('on', v === 'settings'); $('navLib').classList.toggle('on', v === 'library' && !game);
   if (v === 'settings') {
     if (!$('sform').innerHTML) renderSettings();
-    Promise.all([call('audioDevices'), call('runningApps')]).then(([d, a]) => { devices = d; apps = a; if (!$('viewSettings').classList.contains('hidden')) renderSettings(); }).catch(() => { });
+    call('audioDevices').then(d => { devices = d; if (!$('viewSettings').classList.contains('hidden')) renderSettings(); }).catch(() => { });
   }
   render();
 }

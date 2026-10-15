@@ -28,24 +28,12 @@ max_bitrate_mbps = 50
 encoder = "auto"
 show_cursor = true
 
-# Audio works like Medal's:
-#   "split" = record specific programs (default): the game's own sound, Discord and any apps you add.
-#             Music or videos you play elsewhere are left out, whatever output device they use.
-#   "all"   = record whole output devices ("auto" = Windows' default output).
-audio_mode = "split"
-game_audio = true
-game_volume = 100
-discord_audio = true
-discord_volume = 100
-# Extra programs to record in "split" mode, e.g. [{ exe = "spotify.exe", volume = 60 }]
-extra_apps = []
-pc_audio_devices = ["auto"]
-pc_volume = 100
+# Audio: the output devices ("what you hear") and inputs (microphones) to record, each with a
+# volume in percent. id "auto" = Windows' default device; other ids are picked in Settings.
+audio_outputs = [{ id = "auto", name = "Default output", volume = 100 }]
+audio_inputs = [{ id = "auto", name = "Default microphone", volume = 100 }]
 
-mic_enabled = true
-# "auto" = Windows' default microphone, or a device id (pick it in Settings).
-mic_device = "auto"
-mic_volume = 100
+# Microphone processing (applies to every input).
 # Use the louder channel / average to mono (fixes mics that only come in on the left).
 mic_mono = true
 mic_noise_suppression = false
@@ -81,8 +69,10 @@ ffmpeg = "ffmpeg"
 "#;
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
-pub struct ExtraApp {
-    pub exe: String,
+pub struct AudioDevice {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
     pub volume: u32,
 }
 
@@ -102,17 +92,8 @@ pub struct Config {
     pub max_bitrate_mbps: u32,
     pub encoder: String,
     pub show_cursor: bool,
-    pub audio_mode: String,
-    pub game_audio: bool,
-    pub game_volume: u32,
-    pub discord_audio: bool,
-    pub discord_volume: u32,
-    pub extra_apps: Vec<ExtraApp>,
-    pub pc_audio_devices: Vec<String>,
-    pub pc_volume: u32,
-    pub mic_enabled: bool,
-    pub mic_device: String,
-    pub mic_volume: u32,
+    pub audio_outputs: Vec<AudioDevice>,
+    pub audio_inputs: Vec<AudioDevice>,
     pub mic_mono: bool,
     pub mic_noise_suppression: bool,
     pub mic_auto_level: bool,
@@ -187,13 +168,11 @@ impl Config {
     /// (like Medal) instead of restarting.
     pub fn only_volumes_differ(&self, other: &Config) -> bool {
         let mut a = self.clone();
-        a.game_volume = other.game_volume;
-        a.discord_volume = other.discord_volume;
-        a.pc_volume = other.pc_volume;
-        a.mic_volume = other.mic_volume;
-        if a.extra_apps.len() == other.extra_apps.len() {
-            for (x, y) in a.extra_apps.iter_mut().zip(&other.extra_apps) {
-                x.volume = y.volume;
+        for (mine, theirs) in [(&mut a.audio_outputs, &other.audio_outputs), (&mut a.audio_inputs, &other.audio_inputs)] {
+            if mine.len() == theirs.len() {
+                for (x, y) in mine.iter_mut().zip(theirs) {
+                    x.volume = y.volume;
+                }
             }
         }
         a == *other
@@ -219,7 +198,7 @@ mod tests {
         let back = super::Config::parse(&toml::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
         let mut louder = c.clone();
-        louder.mic_volume = 250;
+        louder.audio_inputs[0].volume = 250;
         assert!(c.only_volumes_differ(&louder));
         louder.mic_mono = !louder.mic_mono;
         assert!(!c.only_volumes_differ(&louder));
