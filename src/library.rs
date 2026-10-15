@@ -46,6 +46,10 @@ pub fn run(view: Option<String>) {
             return;
         }
     }
+    // Like Medal's app, make sure the recorder is running whenever the app is open.
+    if !recorder_running() {
+        start_recorder();
+    }
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
     let window = WindowBuilder::new()
@@ -148,6 +152,7 @@ fn respond(status: StatusCode, ctype: &str, body: Vec<u8>) -> Response<Cow<'stat
 fn mime(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
         Some("mp4") => "video/mp4",
+        Some("m4a") => "audio/mp4",
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         _ => "application/octet-stream",
@@ -159,6 +164,13 @@ fn serve(req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         "/" => respond(StatusCode::OK, "text/html; charset=utf-8", UI.as_bytes().to_vec()),
         "/media" => match query_param(req, "path").map(PathBuf::from) {
             Some(p) if allowed(&p) => serve_file(req, &p),
+            _ => respond(StatusCode::FORBIDDEN, "text/plain", b"forbidden".to_vec()),
+        },
+        "/track" => match (query_param(req, "path").map(PathBuf::from), query_param(req, "i").and_then(|i| i.parse::<u32>().ok())) {
+            (Some(p), Some(i)) if allowed(&p) => match audio_track(&p, i) {
+                Some(t) => serve_file(req, &t),
+                None => respond(StatusCode::NOT_FOUND, "text/plain", Vec::new()),
+            },
             _ => respond(StatusCode::FORBIDDEN, "text/plain", b"forbidden".to_vec()),
         },
         route @ ("/thumb" | "/strip") => match query_param(req, "path").map(PathBuf::from) {
@@ -274,6 +286,27 @@ fn preview(path: &Path, kind: &str) -> Option<PathBuf> {
     out.exists().then_some(out)
 }
 
+/// One audio track of a clip as a cached .m4a, for previewing a mix in the editor.
+fn audio_track(path: &Path, track: u32) -> Option<PathBuf> {
+    let meta = path.metadata().ok()?;
+    let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let key = format!("track{track}|{}|{}|{mtime}", path.display(), meta.len());
+    let hash = key.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let dir = config::data_dir().join("thumbs");
+    let out = dir.join(format!("{hash:016x}.m4a"));
+    if !out.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+        let ff = ffmpeg::locate(&cfg())?;
+        let _ = ffmpeg::command(&ff)
+            .arg("-i")
+            .arg(path)
+            .args(["-map", &format!("0:a:{track}"), "-c", "copy", "-vn", "-y"])
+            .arg(&out)
+            .status();
+    }
+    out.exists().then_some(out)
+}
+
 // ---------- commands from the UI ----------
 
 fn handle_ipc(body: &str, proxy: &EventLoopProxy<UserEvent>, hwnd: isize) {
@@ -310,6 +343,7 @@ fn run_command(cmd: &str, args: &Value) -> Result<Value, String> {
     match cmd {
         "list" => Ok(list_clips()),
         "status" => Ok(status()),
+        "runningApps" => Ok(json!(crate::audio::running_apps())),
         "audioDevices" => {
             let (outputs, inputs) = crate::audio::list_devices();
             Ok(json!({ "outputs": outputs, "inputs": inputs }))
@@ -335,12 +369,14 @@ fn run_command(cmd: &str, args: &Value) -> Result<Value, String> {
             let p = arg_path(args)?;
             let start = args["start"].as_f64().unwrap_or(0.0);
             let end = args["end"].as_f64().ok_or("missing end")?;
-            trim(&p, start, end, args["precise"].as_bool().unwrap_or(false), args["replace"].as_bool().unwrap_or(false))
+            let mix: Option<Vec<f64>> = args["mix"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect());
+            trim(&p, start, end, args["precise"].as_bool().unwrap_or(false), args["replace"].as_bool().unwrap_or(false), mix.as_deref())
                 .map(|p| Value::from(p.to_string_lossy()))
         }
         "compress" => {
             let p = arg_path(args)?;
-            compress(&p, args["mb"].as_f64().unwrap_or(10.0)).map(|p| Value::from(p.to_string_lossy()))
+            let mix: Option<Vec<f64>> = args["mix"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect());
+            compress(&p, args["mb"].as_f64().unwrap_or(10.0), mix.as_deref()).map(|p| Value::from(p.to_string_lossy()))
         }
         "rename" => {
             let p = arg_path(args)?;
@@ -436,6 +472,7 @@ fn list_clips() -> Value {
                 "duration": info.as_ref().map(|i| i.seconds).unwrap_or(0.0),
                 "width": info.as_ref().map(|i| i.width).unwrap_or(0),
                 "height": info.as_ref().map(|i| i.height).unwrap_or(0),
+                "tracks": info.as_ref().map(|i| i.audio_tracks.clone()).unwrap_or_default(),
             }));
         }
     };
@@ -499,6 +536,37 @@ fn unique(path: PathBuf) -> PathBuf {
     (2..).map(|i| path.with_file_name(format!("{stem} {i}.{ext}"))).find(|p| !p.exists()).unwrap()
 }
 
+/// Stream mapping for re-saving a clip. With `mix` (volumes for tracks 1..n), the full-mix
+/// track is rebuilt from the separate tracks, like Medal's editor; the separate tracks are kept.
+/// Returns the arguments and whether audio must be re-encoded.
+fn audio_args(info: &mp4::Info, mix: Option<&[f64]>, master_only: bool) -> (Vec<String>, bool) {
+    let n = info.audio_tracks.len();
+    let mut a: Vec<String> = vec!["-map".into(), "0:v".into()];
+    let mix = mix.filter(|m| n > 1 && m.len() >= n - 1 && m.iter().any(|v| (v - 1.0).abs() > 0.01));
+    if let Some(m) = mix {
+        let mut graph = String::new();
+        let mut ins = String::new();
+        for i in 1..n {
+            graph += &format!("[0:a:{i}]volume={:.3}[m{i}];", m[i - 1]);
+            ins += &format!("[m{i}]");
+        }
+        graph += &format!("{ins}amix=inputs={}:normalize=0:duration=longest[mix]", n - 1);
+        a.extend(["-filter_complex".into(), graph, "-map".into(), "[mix]".into()]);
+    } else {
+        a.extend(["-map".into(), "0:a:0?".into()]);
+    }
+    if !master_only {
+        for i in 1..n {
+            a.extend(["-map".into(), format!("0:a:{i}")]);
+        }
+        for (i, name) in info.audio_tracks.iter().enumerate() {
+            a.extend([format!("-metadata:s:a:{i}"), format!("handler_name={name}")]);
+            a.extend([format!("-disposition:a:{i}"), if i == 0 { "default".into() } else { "0".into() }]);
+        }
+    }
+    (a, mix.is_some())
+}
+
 /// Tries each encoder until one works on this PC (hardware first).
 fn encode(input: &Path, pre: &[String], post: &[String], video: impl Fn(&str) -> Vec<String>, out: &Path) -> Result<(), String> {
     let c = cfg();
@@ -520,29 +588,34 @@ fn encode(input: &Path, pre: &[String], post: &[String], video: impl Fn(&str) ->
     Err(last)
 }
 
-fn trim(path: &Path, start: f64, end: f64, precise: bool, replace: bool) -> Result<PathBuf, String> {
+fn trim(path: &Path, start: f64, end: f64, precise: bool, replace: bool, mix: Option<&[f64]>) -> Result<PathBuf, String> {
     if end <= start {
         return Err("The end must be after the start".into());
     }
     let c = cfg();
     let ff = ffmpeg::locate(&c).ok_or("FFmpeg not found")?;
+    let info = mp4::info(path).ok_or("Couldn't read the clip")?;
     let stem = path.file_stem().unwrap().to_string_lossy().to_string();
     let out = if replace {
         path.with_file_name(format!(".{stem}.trim.mp4"))
     } else {
-        unique(path.with_file_name(format!("{stem} (trimmed).mp4")))
+        unique(path.with_file_name(format!("{stem} (edited).mp4")))
     };
     let (ss, t) = (format!("{start:.3}"), format!("{:.3}", end - start));
+    let (maps, mixed) = audio_args(&info, mix, false);
     if precise {
         let pre = vec!["-ss".to_string(), ss];
-        let post = vec!["-t".to_string(), t, "-map".into(), "0".into(), "-pix_fmt".into(), "yuv420p".into()];
+        let mut post = vec!["-t".to_string(), t];
+        post.extend(maps);
+        post.extend(["-pix_fmt".into(), "yuv420p".into()]);
         encode(path, &pre, &post, |enc| ffmpeg::encoder_args(enc, c.quality.min(20), c.max_bitrate_mbps, c.fps), &out)?;
     } else {
-        let args: Vec<String> = vec![
-            "-ss".into(), ss, "-i".into(), path.to_string_lossy().into(), "-t".into(), t, "-map".into(), "0".into(),
-            "-c".into(), "copy".into(), "-avoid_negative_ts".into(), "make_zero".into(), "-movflags".into(),
-            "+faststart".into(), "-y".into(), out.to_string_lossy().into(),
-        ];
+        let mut args: Vec<String> = vec!["-ss".into(), ss, "-i".into(), path.to_string_lossy().into(), "-t".into(), t];
+        args.extend(maps);
+        args.extend(["-c:v".into(), "copy".into()]);
+        args.extend(if mixed { ["-c:a", "aac", "-b:a", "160k"].map(String::from).to_vec() } else { vec!["-c:a".into(), "copy".into()] });
+        args.extend(["-avoid_negative_ts", "make_zero", "-movflags", "+faststart", "-y"].map(String::from));
+        args.push(out.to_string_lossy().into());
         ffmpeg::test(&ff, &args)?;
     }
     if replace {
@@ -554,7 +627,7 @@ fn trim(path: &Path, start: f64, end: f64, precise: bool, replace: bool) -> Resu
 }
 
 /// Re-encodes a copy that fits under `mb` megabytes (Discord's free limit is 10 MB).
-fn compress(path: &Path, mb: f64) -> Result<PathBuf, String> {
+fn compress(path: &Path, mb: f64, mix: Option<&[f64]>) -> Result<PathBuf, String> {
     let info = mp4::info(path).ok_or("Couldn't read the clip")?;
     if info.seconds <= 0.0 {
         return Err("Couldn't read the clip length".into());
@@ -565,7 +638,8 @@ fn compress(path: &Path, mb: f64) -> Result<PathBuf, String> {
         return Err(format!("{:.0}s is too long to fit in {mb} MB. Trim it first.", info.seconds));
     }
     let height = if video_kbps < 2500.0 { 720 } else if video_kbps < 8000.0 { 1080 } else { 1440 };
-    let mut post = vec!["-map".to_string(), "0".into()];
+    // Just the full mix: smaller, and it's what Discord plays anyway.
+    let (mut post, _) = audio_args(&info, mix, true);
     if info.height > height {
         post.extend(["-vf".into(), format!("scale=-2:{height}:flags=bicubic,format=yuv420p")]);
     } else {

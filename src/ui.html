@@ -202,6 +202,18 @@ label.check .switch { width: 36px; height: 20px; }
 label.check .switch span::before { width: 14px; height: 14px; }
 label.check .switch input:checked + span::before { transform: translateX(16px); }
 
+.mixer { display: flex; gap: 10px; margin-top: 14px; align-items: stretch; flex-wrap: wrap; }
+.mixer .mtrack { flex: 1; min-width: 200px; max-width: 320px; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.mixer .mtrack .nm { font-weight: 600; font-size: 13px; width: 64px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mixer .mtrack input { flex: 1; }
+.mixer .mtrack output { width: 42px; text-align: right; color: var(--dim); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.mixer .mtrack button { width: 28px; height: 28px; border-radius: 8px; border: none; background: transparent; color: var(--dim); cursor: pointer; display: grid; place-items: center; }
+.mixer .mtrack button:hover { background: var(--panel3); color: var(--text); }
+.mixer .mtrack.muted { opacity: .5; }
+.mixer .mtrack svg { width: 16px; height: 16px; }
+.mixer .mlabel { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12.5px; padding-right: 4px; }
+.mixer .mlabel svg { width: 16px; height: 16px; }
+
 /* ---------- settings ---------- */
 .settings { max-width: 860px; }
 .card-s { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; margin-bottom: 18px; overflow: hidden; }
@@ -332,8 +344,9 @@ label.check .switch input:checked + span::before { transform: translateX(16px); 
       <label class="check" title="Cuts on the exact frame (re-encodes, a few seconds). Off = instant, may start up to 1s early.">
         <span class="switch"><input type="checkbox" id="precise"><span></span></span>Exact cut</label>
       <button class="btn" onclick="doTrim(false)">Save as new clip</button>
-      <button class="btn primary" onclick="doTrim(true)"><span data-i="scissors"></span>Trim clip</button>
+      <button class="btn primary" onclick="doTrim(true)"><span data-i="check"></span>Save</button>
     </div>
+    <div class="mixer hidden" id="mixer"></div>
   </div>
 </div>
 
@@ -513,6 +526,52 @@ async function copyFile(path) { try { await call('copyFile', { path }); toast('C
 
 // ---------- editor ----------
 let cur = null, vid = null, tIn = 0, tOut = 0;
+// Track mixer (clips recorded with separate tracks): preview each track through Web Audio.
+let actx = null, masterGain = null, trackEls = [], gains = [], mixVals = [], muted = [];
+const trackUrl = (p, i, m) => '/track?path=' + enc(p) + '&i=' + i + '&m=' + m;
+const mixChanged = () => mixVals.some((v, i) => muted[i] || Math.abs(v - 1) > 0.01);
+const mixOut = () => mixVals.map((v, i) => muted[i] ? 0 : v);
+function teardownMixer() {
+  trackEls.forEach(a => { a.pause(); a.removeAttribute('src'); a.load(); });
+  if (actx) actx.close(); actx = masterGain = null; trackEls = []; gains = []; mixVals = []; muted = [];
+  $('mixer').classList.add('hidden'); $('mixer').innerHTML = '';
+}
+function setupMixer(i) {
+  teardownMixer();
+  const t = i.tracks || [];
+  if (t.length < 2 || !vid) return;
+  mixVals = t.slice(1).map(() => 1); muted = t.slice(1).map(() => false);
+  actx = new AudioContext(); masterGain = actx.createGain(); masterGain.connect(actx.destination);
+  masterGain.gain.value = vid.volume;
+  t.slice(1).forEach((_, k) => {
+    const a = new Audio(trackUrl(i.path, k + 1, i.mtime)); a.preload = 'auto';
+    const g = actx.createGain(); actx.createMediaElementSource(a).connect(g).connect(masterGain);
+    trackEls.push(a); gains.push(g);
+  });
+  vid.muted = true; // the video's own (full-mix) audio is replaced by the live mix
+  const ico = n => /mic/i.test(n) ? 'mic' : /game|pc/i.test(n) ? 'gamepad' : 'speaker';
+  $('mixer').innerHTML = `<div class="mlabel">${icon('layers')}Audio mix</div>` + t.slice(1).map((n, k) => `<div class="mtrack" data-t="${k}">
+      <button data-mute="${k}" title="Mute">${icon(ico(n))}</button><span class="nm" title="${esc(n)}">${esc(n || 'Track ' + (k + 1))}</span>
+      <input type="range" min="0" max="2" step="0.05" value="1" data-mix="${k}"><output>100%</output></div>`).join('')
+    + `<button class="btn sm ghost" onclick="resetMix()">Reset</button>`;
+  $('mixer').querySelectorAll('input[type=range]').forEach(setRangeFill);
+  $('mixer').classList.remove('hidden');
+}
+function applyGains() { gains.forEach((g, k) => g.gain.value = muted[k] ? 0 : mixVals[k]); }
+function resetMix() {
+  mixVals = mixVals.map(() => 1); muted = muted.map(() => false); applyGains();
+  $('mixer').querySelectorAll('[data-mix]').forEach(r => { r.value = 1; setRangeFill(r); r.nextElementSibling.textContent = '100%'; });
+  $('mixer').querySelectorAll('.mtrack').forEach(m => m.classList.remove('muted'));
+}
+$('mixer').addEventListener('input', e => { const k = e.target.dataset.mix; if (k === undefined) return; mixVals[k] = +e.target.value; setRangeFill(e.target); e.target.nextElementSibling.textContent = Math.round(mixVals[k] * 100) + '%'; applyGains(); });
+$('mixer').addEventListener('click', e => { const b = e.target.closest('[data-mute]'); if (!b) return; const k = +b.dataset.mute; muted[k] = !muted[k]; b.closest('.mtrack').classList.toggle('muted', muted[k]); applyGains(); });
+function syncTracks(force) {
+  if (!actx || !vid) return;
+  trackEls.forEach(a => {
+    if (force || Math.abs(a.currentTime - vid.currentTime) > 0.12) a.currentTime = vid.currentTime;
+    if (vid.paused && !a.paused) a.pause(); else if (!vid.paused && a.paused) a.play().catch(() => { });
+  });
+}
 function openEditor(i) {
   stopPreview(); cur = i; $('edName').value = i.name; $('compressMenu').classList.add('hidden');
   $('edMeta').innerHTML = `<i style="background:${gameColor(i.game)}"></i>${esc(i.game)} · ${new Date(i.mtime).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} · ${fmtSize(i.size)}${i.width ? ` · ${i.width}×${i.height}` : ''}`;
@@ -525,15 +584,21 @@ function openEditor(i) {
     <div class="vol"><button id="muteBtn">${icon('speaker')}</button><input type="range" min="0" max="1" step="0.01" id="volRange"></div>`;
   vid = pl.querySelector('video');
   const vol = $('volRange'); vol.value = vid.volume = +(localStorage.vol ?? 0.8); setRangeFill(vol);
-  vol.oninput = () => { vid.volume = vol.value; vid.muted = false; localStorage.vol = vol.value; setRangeFill(vol); };
-  $('muteBtn').onclick = () => { vid.muted = !vid.muted; $('muteBtn').innerHTML = icon(vid.muted ? 'mute' : 'speaker'); };
+  vol.oninput = () => { vid.volume = vol.value; if (masterGain) masterGain.gain.value = vol.value; else vid.muted = false; localStorage.vol = vol.value; setRangeFill(vol); };
+  let silenced = false;
+  $('muteBtn').onclick = () => {
+    silenced = !silenced; $('muteBtn').innerHTML = icon(silenced ? 'mute' : 'speaker');
+    if (masterGain) masterGain.gain.value = silenced ? 0 : vid.volume; else vid.muted = silenced;
+  };
   vid.onclick = togglePlay; pl.querySelector('.big-play').onclick = togglePlay;
+  setupMixer(i);
   vid.onloadedmetadata = () => { tIn = 0; tOut = vid.duration; drawTL(); vid.play().catch(() => { }); };
-  vid.ontimeupdate = () => { if (!vid.paused && tOut < vid.duration - 0.05 && vid.currentTime >= tOut) vid.currentTime = tIn; drawTL(); };
-  vid.onplay = vid.onpause = () => { pl.classList.toggle('is-playing', !vid.paused); $('playBtn').innerHTML = icon(vid.paused ? 'play' : 'pause'); };
+  vid.ontimeupdate = () => { if (!vid.paused && tOut < vid.duration - 0.05 && vid.currentTime >= tOut) vid.currentTime = tIn; drawTL(); syncTracks(); };
+  vid.onplay = vid.onpause = () => { actx?.resume(); syncTracks(true); pl.classList.toggle('is-playing', !vid.paused); $('playBtn').innerHTML = icon(vid.paused ? 'play' : 'pause'); };
+  vid.onseeked = () => syncTracks(true);
   $('tl').style.backgroundImage = `url("${strip(i.path, i.mtime)}")`;
 }
-function closeEditor() { if (vid) { vid.pause(); vid.removeAttribute('src'); vid.load(); } $('player').innerHTML = ''; $('editor').classList.add('hidden'); cur = vid = null; }
+function closeEditor() { teardownMixer(); if (vid) { vid.pause(); vid.removeAttribute('src'); vid.load(); } $('player').innerHTML = ''; $('editor').classList.add('hidden'); cur = vid = null; }
 function drawTL() {
   if (!vid || !vid.duration) return; const d = vid.duration, pct = t => (t / d * 100) + '%';
   $('sel').style.left = pct(tIn); $('sel').style.width = ((tOut - tIn) / d * 100) + '%';
@@ -576,13 +641,14 @@ document.addEventListener('keydown', e => {
 });
 async function doTrim(replace) {
   if (!vid) return;
-  if (tIn < 0.05 && tOut > vid.duration - 0.05) { toast('Drag the handles on the timeline to choose the part to keep'); return; }
-  if (replace && !await ask('Trim this clip?', 'The untrimmed original goes to the Recycle Bin.', 'Trim')) return;
-  const args = { path: cur.path, start: tIn, end: tOut, precise: $('precise').checked, replace };
+  const trimmed = !(tIn < 0.05 && tOut > vid.duration - 0.05);
+  if (!trimmed && !mixChanged()) { toast('Drag the timeline handles to trim, or change the audio mix, then save'); return; }
+  if (replace && !await ask('Save over this clip?', 'The original goes to the Recycle Bin, so you can still get it back.', 'Save')) return;
+  const args = { path: cur.path, start: tIn, end: tOut, precise: $('precise').checked, replace, mix: mixChanged() ? mixOut() : null };
   try {
-    vid.pause(); if (replace) { vid.removeAttribute('src'); vid.load(); }
-    const out = await busy($('precise').checked ? 'Cutting on the exact frame…' : 'Cutting…', () => call('trim', args));
-    toast(replace ? 'Clip trimmed' : 'Saved as a new clip');
+    vid.pause(); if (replace) { teardownMixer(); vid.removeAttribute('src'); vid.load(); }
+    const out = await busy($('precise').checked ? 'Saving (exact cut)…' : 'Saving…', () => call('trim', args));
+    toast(replace ? 'Clip saved' : 'Saved as a new clip');
     await load(); const n = items.find(i => i.path === out); if (n) openEditor(n); else closeEditor();
   } catch (e) { toast('Trim failed: ' + e, true); if (replace) openEditor(cur); }
 }
@@ -602,20 +668,12 @@ async function deleteCurrent() {
 }
 async function compressCurrent(mb) {
   $('compressMenu').classList.add('hidden');
-  try { const out = await busy(`Making a ${mb} MB copy…`, () => call('compress', { path: cur.path, mb })); await load(); toast(`Saved a ${mb} MB copy`); const n = items.find(i => i.path === out); if (n) openEditor(n); }
+  try { const out = await busy(`Making a ${mb} MB copy…`, () => call('compress', { path: cur.path, mb, mix: mixChanged() ? mixOut() : null })); await load(); toast(`Saved a ${mb} MB copy`); const n = items.find(i => i.path === out); if (n) openEditor(n); }
   catch (e) { toast('Compress failed: ' + e, true); }
 }
 
-// ---------- settings ----------
-let devices = { outputs: [], inputs: [] };
-const SPECIAL = [
-  ['all-outputs', 'Everything I hear', 'Every channel of the device you listen through (all BEACN / GoXLR / Wave Link channels)', 'speaker'],
-  ['default-output', 'Default output', 'Whatever Windows is currently playing to', 'speaker'],
-  ['game', 'Game only', "Only the detected game's own sound (Windows 10 2004+)", 'gamepad'],
-  ['default-input', 'Microphone', 'Your Windows default mic', 'mic'],
-];
-const dirty = () => JSON.stringify(cfg) !== JSON.stringify(saved);
-function markDirty() { $('savebar')?.classList.toggle('show', dirty()); }
+// ---------- settings (saved as you change them, like Medal) ----------
+let devices = { outputs: [], inputs: [] }, apps = [];
 const opt = (v, l, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`;
 const row = (label, hint, control) => `<div class="row"><div class="lbl"><b>${label}</b>${hint ? `<small>${hint}</small>` : ''}</div>${control}</div>`;
 const pick = (k, opts) => `<select class="field" data-k="${k}">${opts.map(([v, l]) => opt(v, l, cfg[k])).join('')}</select>`;
@@ -623,38 +681,54 @@ const seg = (k, opts) => `<div class="seg" data-seg="${k}">${opts.map(([v, l]) =
 const sw = k => `<label class="switch"><input type="checkbox" data-k="${k}" ${cfg[k] ? 'checked' : ''}><span></span></label>`;
 const num = (k, min, max) => `<input class="field num" type="number" data-k="${k}" min="${min}" max="${max}" value="${cfg[k]}">`;
 const rng = (k, min, max, step, fmt) => `<div class="range-wrap"><input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${cfg[k]}"><output data-o="${k}">${fmt(cfg[k])}</output></div>`;
+const vol = (k, max = 200) => `<div class="range-wrap" style="width:240px"><input type="range" data-k="${k}" min="0" max="${max}" step="5" value="${cfg[k]}"><output data-o="${k}" style="width:46px">${cfg[k]}%</output></div>`;
 const hkHtml = v => v ? v.split('+').map(p => `<kbd>${esc(p)}</kbd>`).join('<span style="color:var(--dimmer)">+</span>') : '<span style="color:var(--dimmer)">Not set</span>';
-const hotkey = k => `<div class="hotkey" tabindex="0" data-hk="${k}">${hkHtml(cfg[k])}</div>`;
+const hotkey = (k, mouse = false) => `<div class="hotkey" tabindex="0" data-hk="${k}" ${mouse ? 'data-mouse="1"' : ''}>${hkHtml(cfg[k])}</div>`;
 const textList = k => `<textarea class="field" data-k="${k}" data-list="1" spellcheck="false" style="width:320px">${esc((cfg[k] || []).join('\n'))}</textarea>`;
 const qualityLabel = q => (q <= 18 ? 'Near lossless' : q <= 22 ? 'High' : q <= 25 ? 'Good' : 'Small') + ` (${q})`;
 const section = (ico, title, sub, body) => `<section class="card-s" id="s-${title.split(' ')[0].toLowerCase()}"><header><div class="ico">${icon(ico)}</div><div><h3>${title}</h3>${sub ? `<p>${sub}</p>` : ''}</div></header>${body}</section>`;
+const srcRow = (ico, name, hint, control) => `<div class="row"><div class="src-ico">${icon(ico)}</div><div class="lbl"><b>${name}</b>${hint ? `<small>${hint}</small>` : ''}</div>${control}</div>`;
+const dim = on => on ? '' : ' style="opacity:.45;pointer-events:none"';
+const withToggle = (inner, k) => `<div style="display:flex;align-items:center;gap:14px"><span${dim(cfg[k])}>${inner}</span>${sw(k)}</div>`;
 
-function srcInfo(s) {
-  const sp = SPECIAL.find(x => x[0] === s.id); if (sp) return { name: sp[1], hint: sp[2], ico: sp[3] };
-  const o = devices.outputs.find(d => d.id === s.id), i = devices.inputs.find(d => d.id === s.id);
-  if (o) return { name: o.name, hint: 'Output device' + (o.interface ? ' · ' + o.interface : ''), ico: 'speaker' };
-  if (i) return { name: i.name, hint: 'Input device', ico: 'mic' };
-  return { name: s.name || 'Unknown device', hint: 'Not connected right now', ico: 'alert' };
+function audioHtml() {
+  const split = cfg.audio_mode !== 'all';
+  let h = row('What to record', split ? 'Only the programs below are recorded, whatever device or mixer channel they play on. Music and videos you play elsewhere stay out of your clips.'
+    : 'Records everything playing on the chosen output devices.', seg('audio_mode', [['split', 'Split by app'], ['all', 'All PC audio']]));
+  if (split) {
+    h += srcRow('gamepad', 'Game audio', 'The game you are playing', withToggle(vol('game_volume'), 'game_audio'));
+    h += srcRow('speaker', 'Discord', 'Voice chat', withToggle(vol('discord_volume'), 'discord_audio'));
+    (cfg.extra_apps || []).forEach((a, n) => {
+      h += srcRow('layers', esc(a.exe), 'Added app', `<div style="display:flex;align-items:center;gap:6px"><div class="range-wrap" style="width:240px"><input type="range" min="0" max="200" step="5" value="${a.volume}" data-app="${n}"><output style="width:46px">${a.volume}%</output></div><button class="btn icon-btn ghost" data-rmapp="${n}" title="Remove">${icon('x')}</button></div>`);
+    });
+    const have = new Set((cfg.extra_apps || []).map(a => a.exe));
+    h += srcRow('plus', 'Add an app', 'Record another program too, e.g. a music player', `<select class="field" id="addApp"><option value="">Choose a running app…</option>${apps.filter(a => !have.has(a)).map(a => `<option>${esc(a)}</option>`).join('')}</select>`);
+  } else {
+    h += srcRow('speaker', 'PC audio', '', vol('pc_volume'));
+    const sel = new Set(cfg.pc_audio_devices || []);
+    const devs = [['auto', 'Default output', 'Follows your Windows default'], ...devices.outputs.map(d => [d.id, d.name, d.interface])];
+    h += `<div class="row" style="align-items:flex-start"><div class="lbl"><b>Output devices</b><small>Pick every output you want in clips (e.g. each mixer channel)</small></div><div style="display:grid;gap:10px;min-width:320px">` +
+      devs.map(([id, name, hint]) => `<label class="check" style="color:var(--text)"><span class="switch"><input type="checkbox" data-dev="${esc(id)}" ${sel.has(id) ? 'checked' : ''}><span></span></span>${esc(name)}${hint ? ` <small style="color:var(--dimmer)">${esc(hint)}</small>` : ''}</label>`).join('') + '</div></div>';
+  }
+  h += row('Separate audio tracks', 'Also saves game, mic and Discord as their own tracks, so you can rebalance them in the editor afterwards', sw('multiple_audio_tracks'));
+  return h;
 }
-function sourcesHtml() {
-  const rows = (cfg.audio_sources || []).map((s, n) => {
-    const d = srcInfo(s);
-    return `<div class="row"><div class="src-ico">${icon(d.ico)}</div><div class="lbl"><b>${esc(d.name)}</b><small>${esc(d.hint)}</small></div>
-      <div class="range-wrap" style="width:230px"><input type="range" min="0" max="2" step="0.05" value="${s.volume}" data-src="${n}"><output style="width:46px">${Math.round(s.volume * 100)}%</output></div>
-      <button class="btn icon-btn ghost" data-rm="${n}" title="Remove">${icon('x')}</button></div>`;
-  }).join('') || row('No audio sources', 'Clips will be silent. Add a source below.', '');
-  const used = new Set((cfg.audio_sources || []).map(s => s.id));
-  const o = (id, l) => used.has(id) ? '' : `<option value="${esc(id)}">${esc(l)}</option>`;
-  const add = `<select class="field" id="addSrc"><option value="">Add a source…</option>${SPECIAL.map(([id, l]) => o(id, l)).join('')}
-    ${devices.outputs.length ? `<optgroup label="Output devices">${devices.outputs.map(d => o(d.id, d.name)).join('')}</optgroup>` : ''}
-    ${devices.inputs.length ? `<optgroup label="Input devices">${devices.inputs.map(d => o(d.id, d.name)).join('')}</optgroup>` : ''}</select>`;
-  return rows + `<div class="row"><div class="src-ico">${icon('plus')}</div><div class="lbl"><b>Add audio</b><small>Pick the outputs your games and chat play through, a mic, or "Everything I hear"</small></div>${add}</div>`;
+function micHtml() {
+  return row('Record microphone', '', sw('mic_enabled')) + `<div${dim(cfg.mic_enabled)}>` +
+    row('Microphone', '', `<select class="field" data-k="mic_device">${opt('auto', 'Default microphone', cfg.mic_device)}${devices.inputs.map(d => opt(d.id, d.name, cfg.mic_device)).join('')}</select>`) +
+    row('Volume', 'Boost a quiet mic up to 300%', vol('mic_volume', 300)) +
+    row('Auto level', 'Brings a quiet voice up to a normal speaking level without boosting background noise', sw('mic_auto_level')) +
+    row('Mono', 'Fixes mics that only come in on one side (common with audio interfaces)', sw('mic_mono')) +
+    row('Noise suppression', 'Removes keyboard, fan and background noise', sw('mic_noise_suppression')) +
+    row('Noise gate', 'Mutes the mic below a level', withToggle(rng('mic_noise_gate_db', -80, -20, 1, v => v + ' dB'), 'mic_noise_gate')) +
+    row('Push to talk', 'Only record the mic while a key or mouse button is held', withToggle(hotkey('push_to_talk_key', true), 'push_to_talk')) + '</div>';
 }
 
 function renderSettings() {
   const ram = Math.round(cfg.max_bitrate_mbps / 8 * (cfg.clip_seconds + 5));
+  const top = $('viewSettings').scrollTop;
   $('sform').innerHTML = `
-  <div class="page-head"><div><h1>Settings</h1><p>Changes apply when you save (the recorder restarts in about a second)</p></div></div>
+  <div class="page-head"><div><h1>Settings</h1><p>Changes save automatically. Volumes apply instantly, even mid-game</p></div><span class="chip" id="savedChip" style="margin-left:auto;opacity:0;transition:.3s">Saved</span></div>
   ${section('video', 'Capture', 'What gets recorded and when', `
     ${row('When to capture', 'Only while gaming uses no resources the rest of the time', seg('capture_mode', [['games', 'Only while gaming'], ['always', 'Always']]))}
     ${row('Clip length', 'How far back a saved clip goes', pick('clip_seconds', [[15, '15 seconds'], [30, '30 seconds'], [45, '45 seconds'], [60, '1 minute'], [90, '90 seconds'], [120, '2 minutes'], [180, '3 minutes'], [300, '5 minutes']]))}
@@ -666,13 +740,14 @@ function renderSettings() {
     ${row('Encoder', 'Auto picks your NVIDIA, AMD or Intel GPU', pick('encoder', [['auto', 'Auto (recommended)'], ['h264_nvenc', 'NVIDIA · H.264'], ['hevc_nvenc', 'NVIDIA · HEVC'], ['av1_nvenc', 'NVIDIA · AV1'], ['h264_amf', 'AMD · H.264'], ['hevc_amf', 'AMD · HEVC'], ['av1_amf', 'AMD · AV1'], ['h264_qsv', 'Intel · H.264'], ['hevc_qsv', 'Intel · HEVC'], ['h264_mf', 'Windows (any GPU)'], ['libx264', 'CPU (slow)']]))}
     ${row('Monitor', '', pick('monitor', [[-1, 'Where the game is'], [0, 'Monitor 1'], [1, 'Monitor 2'], [2, 'Monitor 3']]))}
     ${row('Show mouse cursor', '', sw('show_cursor'))}`)}
-  ${section('speaker', 'Audio', 'Everything mixed into your clips', `<div id="srcList">${sourcesHtml()}</div>`)}
+  ${section('speaker', 'Audio', 'What ends up in your clips', audioHtml())}
+  ${section('mic', 'Microphone', 'Your voice, kept separate from game audio', micHtml())}
   ${section('keyboard', 'Hotkeys', 'Click a shortcut, then press the keys you want', `
     ${row('Save clip', `Saves the last ${cfg.clip_seconds} seconds`, hotkey('clip_hotkey'))}
     ${row('Start / stop recording', 'Records until you press it again', hotkey('record_hotkey'))}
     ${row('Screenshot', '', hotkey('screenshot_hotkey'))}`)}
   ${section('hdd', 'Storage & behavior', 'Where clips go and how the app behaves', `
-    ${row('Clips folder', esc(cfg.output_dir || 'Videos\\Crispy Clipper (default)'), `<div style="display:flex;gap:6px"><button class="btn" onclick="pickFolder()">${icon('folder')}Change</button>${cfg.output_dir ? `<button class="btn ghost" onclick="cfg.output_dir='';renderSettings()">Default</button>` : ''}</div>`)}
+    ${row('Clips folder', esc(cfg.output_dir || 'Videos\\Crispy Clipper (default)'), `<div style="display:flex;gap:6px"><button class="btn" onclick="pickFolder()">${icon('folder')}Change</button>${cfg.output_dir ? `<button class="btn ghost" onclick="cfg.output_dir='';changed(true)">Default</button>` : ''}</div>`)}
     ${row('"Clip saved" popup', 'Shows over borderless and windowed games', sw('notify_overlay'))}
     ${row('Sound when saving', '', sw('notify_sound'))}
     ${row('Start with Windows', 'Runs quietly in the tray', sw('start_with_windows'))}`)}
@@ -680,62 +755,81 @@ function renderSettings() {
     ${row('Always treat as games', 'One exe name per line, e.g. windowed games', textList('game_apps'))}
     ${row('Never treat as games', 'One exe name per line', textList('ignored_apps'))}`)}
   ${section('info', 'About', '', `<div class="about" id="about"></div><div class="row"><div class="lbl"><b>Restore defaults</b><small>Resets every setting above</small></div><button class="btn" onclick="resetSettings()">Restore</button></div>
-    <div class="row"><div class="lbl"><b>Uninstall</b><small>Removes the app, shortcuts and settings. Your clips stay.</small></div><button class="btn danger" onclick="uninstall()">${icon('trash')}Uninstall</button></div>`)}
-  <div class="savebar" id="savebar"><span><b>Unsaved changes</b></span><button class="btn ghost" onclick="discard()">Discard</button><button class="btn primary" onclick="saveSettings()">${icon('check')}Save changes</button></div>`;
+    <div class="row"><div class="lbl"><b>Uninstall</b><small>Removes the app, shortcuts and settings. Your clips stay.</small></div><button class="btn danger" onclick="uninstall()">${icon('trash')}Uninstall</button></div>`)}`;
   $('sform').querySelectorAll('input[type=range]').forEach(setRangeFill);
-  renderAbout(); markDirty();
+  $('viewSettings').scrollTop = top;
+  renderAbout();
 }
-// One delegated handler for every control.
+// Save shortly after the last change; `rerender` redraws for changes that show/hide controls.
+let saveTimer = null;
+function changed(rerender) {
+  if (rerender) renderSettings();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveSettings, 350);
+}
+const RERENDER = new Set(['audio_mode', 'game_audio', 'discord_audio', 'mic_enabled', 'mic_noise_gate', 'push_to_talk', 'clip_seconds', 'max_bitrate_mbps']);
 $('sform').addEventListener('input', e => {
   const el = e.target;
-  if (el.dataset.src !== undefined) { const s = cfg.audio_sources[+el.dataset.src]; s.volume = +el.value; el.nextElementSibling.textContent = Math.round(s.volume * 100) + '%'; setRangeFill(el); return markDirty(); }
+  if (el.dataset.app !== undefined) { const a = cfg.extra_apps[+el.dataset.app]; a.volume = +el.value; el.nextElementSibling.textContent = a.volume + '%'; setRangeFill(el); return changed(); }
+  if (el.dataset.dev !== undefined) {
+    const set = new Set(cfg.pc_audio_devices); el.checked ? set.add(el.dataset.dev) : set.delete(el.dataset.dev);
+    cfg.pc_audio_devices = [...set]; return changed();
+  }
   const k = el.dataset.k; if (!k) return;
   let v = el.type === 'checkbox' ? el.checked : el.dataset.list ? el.value.split(/[\n,]/).map(s => s.trim().toLowerCase()).filter(Boolean) : el.value;
   if (typeof saved[k] === 'number') v = parseFloat(v);
   cfg[k] = v;
-  if (el.type === 'range') { setRangeFill(el); const o = $('sform').querySelector(`[data-o="${k}"]`); if (o) o.textContent = k === 'quality' ? qualityLabel(v) : v; }
-  markDirty();
+  if (el.type === 'range') {
+    setRangeFill(el); const o = $('sform').querySelector(`[data-o="${k}"]`);
+    if (o) o.textContent = k === 'quality' ? qualityLabel(v) : k.endsWith('_volume') ? v + '%' : k === 'mic_noise_gate_db' ? v + ' dB' : v;
+  }
+  changed(el.type === 'checkbox' && RERENDER.has(k));
 });
-$('sform').addEventListener('change', e => { if (e.target.id === 'addSrc') addSource(e.target); else if (e.target.dataset.k === 'clip_seconds' || e.target.dataset.k === 'max_bitrate_mbps') renderSettings(); });
+$('sform').addEventListener('change', e => {
+  if (e.target.id === 'addApp' && e.target.value) { cfg.extra_apps.push({ exe: e.target.value, volume: 100 }); changed(true); }
+  else if (e.target.tagName === 'SELECT' && RERENDER.has(e.target.dataset.k)) changed(true);
+});
 $('sform').addEventListener('click', e => {
   const b = e.target.closest('[data-v]'); const segEl = b?.closest('[data-seg]');
-  if (segEl) { const k = segEl.dataset.seg; cfg[k] = typeof saved[k] === 'number' ? +b.dataset.v : b.dataset.v; segEl.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); return markDirty(); }
-  const rm = e.target.closest('[data-rm]'); if (rm) { cfg.audio_sources.splice(+rm.dataset.rm, 1); $('srcList').innerHTML = sourcesHtml(); return markDirty(); }
-  const h = e.target.closest('[data-hk]'); if (h) { h.classList.add('listening'); h.textContent = 'Press keys… (Esc cancels, Backspace clears)'; h.focus(); }
+  if (segEl) { const k = segEl.dataset.seg; cfg[k] = typeof saved[k] === 'number' ? +b.dataset.v : b.dataset.v; segEl.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); return changed(RERENDER.has(k)); }
+  const rm = e.target.closest('[data-rmapp]'); if (rm) { cfg.extra_apps.splice(+rm.dataset.rmapp, 1); return changed(true); }
+  const h = e.target.closest('[data-hk]'); if (h && !h.classList.contains('listening')) { h.classList.add('listening'); h.textContent = h.dataset.mouse ? 'Press a key or mouse button…' : 'Press keys… (Esc cancels, Backspace clears)'; h.focus(); }
+});
+$('sform').addEventListener('mousedown', e => {
+  const h = e.target.closest('[data-hk]'); if (!h || !h.classList.contains('listening') || !h.dataset.mouse) return;
+  const m = { 1: 'MiddleMouse', 3: 'Mouse4', 4: 'Mouse5' }[e.button]; if (!m) return;
+  e.preventDefault(); cfg[h.dataset.hk] = m; h.blur(); changed();
 });
 $('sform').addEventListener('focusout', e => { const h = e.target.closest?.('[data-hk]'); if (h) { h.classList.remove('listening'); h.innerHTML = hkHtml(cfg[h.dataset.hk]); } });
 $('sform').addEventListener('keydown', e => {
   const h = e.target.closest?.('[data-hk]'); if (!h || !h.classList.contains('listening')) return;
   e.preventDefault(); const k = keyName(e); if (!k) return;
   if (e.key === 'Escape') return h.blur();
-  if (e.key === 'Backspace' || e.key === 'Delete') { cfg[h.dataset.hk] = ''; markDirty(); return h.blur(); }
-  cfg[h.dataset.hk] = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', k].filter(Boolean).join('+'); markDirty(); h.blur();
+  if (e.key === 'Backspace' || e.key === 'Delete') { cfg[h.dataset.hk] = ''; h.blur(); return changed(); }
+  cfg[h.dataset.hk] = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', k].filter(Boolean).join('+'); h.blur(); changed();
 });
-function addSource(el) {
-  const id = el.value; if (!id) return;
-  const name = [...SPECIAL.map(x => ({ id: x[0], name: x[1] })), ...devices.outputs, ...devices.inputs].find(d => d.id === id)?.name || '';
-  cfg.audio_sources.push({ id, name, volume: 1 }); $('srcList').innerHTML = sourcesHtml(); markDirty();
-}
 function keyName(e) {
   if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return null;
   if (/^F\d{1,2}$/.test(e.key)) return e.key;
   if (/^Numpad\d$/.test(e.code)) return 'Num' + e.code.slice(6);
   if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
   if (/^Digit\d$/.test(e.code)) return e.code.slice(5);
-  return { PrintScreen: 'PrintScreen', Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Pause: 'Pause', Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete' }[e.key] || null;
+  return { PrintScreen: 'PrintScreen', Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Pause: 'Pause', CapsLock: 'CapsLock', Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete' }[e.key] || null;
 }
 function renderAbout() {
   if (!$('about') || !status) return;
   $('about').innerHTML = `<span>Version</span><code>${esc(status.version)}</code><span>Encoder</span><code>${esc(status.ffmpeg || 'not found')}</code>
     <span>Settings</span><code>${esc(status.settingsPath)}</code><span>Log</span><code>${esc(status.logPath)}</code>`;
 }
-async function pickFolder() { try { cfg.output_dir = await call('pickFolder'); renderSettings(); } catch { } }
+async function pickFolder() { try { cfg.output_dir = await call('pickFolder'); changed(true); } catch { } }
 async function saveSettings() {
-  try { await call('saveConfig', cfg); saved = JSON.parse(JSON.stringify(cfg)); markDirty(); toast('Saved. The recorder restarted with your new settings'); setTimeout(refreshStatus, 2500); load(); }
-  catch (e) { toast('Could not save: ' + e, true); }
+  try {
+    await call('saveConfig', cfg); saved = JSON.parse(JSON.stringify(cfg));
+    const c = $('savedChip'); if (c) { c.style.opacity = 1; clearTimeout(c._h); c._h = setTimeout(() => c.style.opacity = 0, 1500); }
+    setTimeout(refreshStatus, 2000);
+  } catch (e) { toast('Could not save: ' + e, true); }
 }
-function discard() { cfg = JSON.parse(JSON.stringify(saved)); renderSettings(); }
-async function resetSettings() { if (!await ask('Restore defaults?', 'Every setting goes back to its default. You can still discard before saving.', 'Restore')) return; cfg = await call('defaults'); renderSettings(); }
+async function resetSettings() { if (!await ask('Restore defaults?', 'Every setting goes back to its default.', 'Restore')) return; cfg = await call('defaults'); changed(true); }
 async function uninstall() {
   if (!await ask('Uninstall Crispy Clipper?', 'This removes the app, its shortcuts and settings. Your clips stay where they are.', 'Uninstall', true)) return;
   await call('uninstall').catch(() => { });
@@ -747,7 +841,7 @@ function showView(v) {
   $('navSet').classList.toggle('on', v === 'settings'); $('navLib').classList.toggle('on', v === 'library' && !game);
   if (v === 'settings') {
     if (!$('sform').innerHTML) renderSettings();
-    call('audioDevices').then(d => { devices = d; if ($('srcList')) $('srcList').innerHTML = sourcesHtml(); }).catch(() => { });
+    Promise.all([call('audioDevices'), call('runningApps')]).then(([d, a]) => { devices = d; apps = a; if (!$('viewSettings').classList.contains('hidden')) renderSettings(); }).catch(() => { });
   }
   render();
 }
@@ -766,7 +860,7 @@ async function refreshStatus() {
 }
 async function startRecorder() { await call('startRecorder'); setTimeout(refreshStatus, 1500); }
 
-call('config').then(c => { cfg = c; saved = JSON.parse(JSON.stringify(c)); render(); refreshStatus(); if (location.hash.startsWith('#settings')) { showView('settings'); const t = $('s-' + location.hash.split('-')[1]); if (t) setTimeout(() => t.scrollIntoView(), 300); } });
+call('config').then(c => { cfg = c; saved = JSON.parse(JSON.stringify(c)); render(); refreshStatus(); if (location.hash.startsWith('#settings')) { showView('settings'); setTimeout(() => $('s-' + location.hash.split('-')[1])?.scrollIntoView(), 1500); } });
 load();
 setInterval(refreshStatus, 5000);
 // Pick up new clips while the window is open.

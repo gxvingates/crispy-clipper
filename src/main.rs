@@ -4,6 +4,7 @@ mod audio;
 mod config;
 mod ffmpeg;
 mod games;
+mod hotkey;
 mod icon;
 mod install;
 mod library;
@@ -23,7 +24,7 @@ use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError
 use windows::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
+use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, GetCurrentThreadId, INFINITE, OpenEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
@@ -42,34 +43,6 @@ pub fn timestamp() -> String {
 
 pub fn message_box(text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
     unsafe { MessageBoxW(None, &HSTRING::from(text), w!("Crispy Clipper"), style) }
-}
-
-fn parse_hotkey(s: &str) -> Option<(HOT_KEY_MODIFIERS, u32)> {
-    let mut mods = MOD_NOREPEAT;
-    let mut vk = None;
-    for part in s.split('+').map(|p| p.trim().to_ascii_uppercase()) {
-        match part.as_str() {
-            "CTRL" | "CONTROL" => mods |= MOD_CONTROL,
-            "ALT" => mods |= MOD_ALT,
-            "SHIFT" => mods |= MOD_SHIFT,
-            "WIN" => mods |= MOD_WIN,
-            k if k.len() > 1 && k.starts_with('F') && k[1..].chars().all(|c| c.is_ascii_digit()) => {
-                let n: u32 = k[1..].parse().ok().filter(|n| (1..=24).contains(n))?;
-                vk = Some(VK_F1.0 as u32 + n - 1);
-            }
-            k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => vk = Some(k.as_bytes()[0] as u32),
-            "PRINTSCREEN" | "PRTSC" => vk = Some(VK_SNAPSHOT.0 as u32),
-            "INSERT" => vk = Some(VK_INSERT.0 as u32),
-            "HOME" => vk = Some(VK_HOME.0 as u32),
-            "END" => vk = Some(VK_END.0 as u32),
-            "PAGEUP" => vk = Some(VK_PRIOR.0 as u32),
-            "PAGEDOWN" => vk = Some(VK_NEXT.0 as u32),
-            "PAUSE" => vk = Some(VK_PAUSE.0 as u32),
-            k if k.starts_with("NUM") && k.len() == 4 => vk = Some(VK_NUMPAD0.0 as u32 + k[3..].parse::<u32>().ok()?),
-            _ => return None,
-        }
-    }
-    Some((mods, vk?))
 }
 
 /// Single instance for the background recorder. With `wait`, waits for a restarting predecessor.
@@ -138,8 +111,21 @@ fn main() {
         }
         return;
     }
+    // `--clip` / `--record` / `--screenshot`: trigger a running recorder (Stream Deck, macros).
+    for (flag, name) in [("--clip", w!("Local\\CrispyClipperClip")), ("--record", w!("Local\\CrispyClipperRecord")), ("--screenshot", w!("Local\\CrispyClipperShot"))] {
+        if has(flag) {
+            unsafe {
+                if let Ok(ev) = OpenEventW(EVENT_MODIFY_STATE, false, name) {
+                    let _ = SetEvent(ev);
+                }
+            }
+            return;
+        }
+    }
     let background = has("--background");
     log_to_file();
+    // Release builds abort on panic: get the reason into the log first.
+    std::panic::set_hook(Box::new(|info| eprintln!("[panic] {} {info}", timestamp())));
 
     if !take_instance_lock(has("--replace")) {
         if !background {
@@ -238,18 +224,48 @@ fn main() {
         std::thread::spawn(move || rec.run());
     }
 
-    // Restart when settings are saved (from the library or by hand).
-    std::thread::spawn(move || {
-        let start = settings_mtime();
-        loop {
-            std::thread::sleep(Duration::from_secs(1));
-            if settings_mtime() != start {
-                std::thread::sleep(Duration::from_millis(300)); // let the write finish
-                post(WM_RELOAD, 0);
-                break;
+    // Settings saved (the library saves as you change things): volumes apply live, like
+    // Medal's sliders; anything else restarts the recorder with the new settings.
+    {
+        let (rec, mut current) = (rec.clone(), cfg.clone());
+        std::thread::spawn(move || {
+            let mut seen = settings_mtime();
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                if settings_mtime() == seen {
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(150)); // let the write finish
+                seen = settings_mtime();
+                match Config::load() {
+                    Ok(new) if new == current => {}
+                    Ok(new) if current.only_volumes_differ(&new) => {
+                        rec.set_volumes(&new);
+                        current = new;
+                        eprintln!("[app] volumes updated");
+                    }
+                    Ok(_) => {
+                        post(WM_RELOAD, 0);
+                        break;
+                    }
+                    Err(e) => eprintln!("[app] settings not reloaded: {e}"),
+                }
             }
+        });
+    }
+
+    // Named events for `--clip` etc.: each wakes a thread that posts the matching hotkey id.
+    for (id, name) in [(1usize, w!("Local\\CrispyClipperClip")), (2, w!("Local\\CrispyClipperRecord")), (3, w!("Local\\CrispyClipperShot"))] {
+        if let Ok(ev) = unsafe { CreateEventW(None, false, false, name) } {
+            let ev = ev.0 as usize;
+            std::thread::spawn(move || loop {
+                unsafe {
+                    WaitForSingleObject(HANDLE(ev as _), INFINITE);
+                    let _ = PostThreadMessageW(tid, WM_HOTKEY, WPARAM(id), LPARAM(0));
+                }
+            });
         }
-    });
+    }
 
     let hotkeys = [(1, &cfg.clip_hotkey), (2, &cfg.record_hotkey), (3, &cfg.screenshot_hotkey)];
     let mut bad = Vec::new();
@@ -257,7 +273,7 @@ fn main() {
         if key.trim().is_empty() {
             continue;
         }
-        match parse_hotkey(key) {
+        match hotkey::parse(key) {
             Some((mods, vk)) if unsafe { RegisterHotKey(None, id, mods, vk) }.is_ok() => {}
             Some(_) => bad.push(format!("{key} (used by another app)")),
             None => bad.push(format!("{key} (not a valid key)")),

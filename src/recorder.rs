@@ -61,7 +61,7 @@ fn output_size(idx: u32) -> Option<(u32, u32)> {
 
 impl Recorder {
     pub fn new(cfg: Config, ffmpeg: PathBuf, events: mpsc::Sender<Event>, on_event: impl Fn() + Send + Sync + 'static) -> Arc<Recorder> {
-        let mixer = Mixer::new(&cfg.audio_sources);
+        let mixer = Mixer::new(&cfg);
         Arc::new(Recorder {
             ring: Mutex::new(Ring::new(Duration::from_secs(cfg.clip_seconds as u64 + 5))),
             cfg,
@@ -147,6 +147,36 @@ impl Recorder {
         v
     }
 
+    /// Splits the interleaved mixer output into one stereo track each (full mix first),
+    /// named like Medal's ("All Audio", "Game", "Mic", "Discord").
+    fn audio_maps(&self) -> Vec<String> {
+        let tracks = &self.mixer.tracks;
+        let mut a: Vec<String> = vec!["-map".into(), "0:v".into()];
+        if tracks.len() == 1 {
+            a.extend(["-map".into(), "1:a".into()]);
+        } else {
+            let outs: String = (0..tracks.len()).map(|i| format!("[s{i}]")).collect();
+            let mut graph = format!("[1:a]asplit={}{outs}", tracks.len());
+            for i in 0..tracks.len() {
+                graph += &format!(";[s{i}]pan=stereo|c0=c{}|c1=c{}[a{i}]", 2 * i, 2 * i + 1);
+            }
+            a.extend(["-filter_complex".into(), graph]);
+            for i in 0..tracks.len() {
+                a.extend(["-map".into(), format!("[a{i}]")]);
+            }
+        }
+        for (i, name) in tracks.iter().enumerate() {
+            a.extend([format!("-metadata:s:a:{i}"), format!("title={name}")]);
+            a.extend([format!("-metadata:s:a:{i}"), format!("handler_name={name}")]);
+        }
+        a
+    }
+
+    /// New volumes take effect immediately; nothing else changes.
+    pub fn set_volumes(&self, cfg: &Config) {
+        self.mixer.set_volumes(cfg);
+    }
+
     fn video_args(&self, p: &Pipeline) -> Vec<String> {
         let mut a = Vec::new();
         if let Some(f) = &p.filter {
@@ -185,8 +215,9 @@ impl Recorder {
     fn spawn(self: &Arc<Self>, p: &Pipeline) -> std::io::Result<Child> {
         let mut cmd = ffmpeg::command(&self.ffmpeg);
         cmd.args(["-f", "lavfi", "-i", &self.grab(p.output, self.cfg.fps)])
-            .args(["-f", "f32le", "-ar", &RATE.to_string(), "-ac", "2", "-thread_queue_size", "1024"])
-            .args(["-probesize", "32", "-analyzeduration", "0", "-i", "pipe:0"])
+            .args(["-f", "f32le", "-ar", &RATE.to_string(), "-ac", &(2 * self.mixer.tracks.len()).to_string()])
+            .args(["-thread_queue_size", "1024", "-probesize", "32", "-analyzeduration", "0", "-i", "pipe:0"])
+            .args(self.audio_maps())
             .args(self.video_args(p))
             .args(["-c:a", "aac", "-b:a", "160k"])
             .args(["-mpegts_pmt_start_pid", &ring::PMT_PID.to_string()])
@@ -314,7 +345,7 @@ impl Recorder {
         let ts = dir.join(format!(".clip {stamp}.ts"));
         std::fs::write(&ts, data).map_err(|e| e.to_string())?;
         let mp4 = dir.join(format!("Clip {stamp}.mp4"));
-        let res = remux(&self.ffmpeg, &ts, &mp4);
+        let res = remux(&self.ffmpeg, &ts, &mp4, &self.mixer.tracks);
         let _ = std::fs::remove_file(&ts);
         res.map(|_| mp4)
     }
@@ -329,7 +360,7 @@ impl Recorder {
                 let mp4 = ts.with_file_name(
                     ts.file_name().unwrap().to_string_lossy().trim_start_matches('.').replace(".ts", ".mp4"),
                 );
-                let res = remux(&me.ffmpeg, &ts, &mp4);
+                let res = remux(&me.ffmpeg, &ts, &mp4, &me.mixer.tracks);
                 if res.is_ok() {
                     let _ = std::fs::remove_file(&ts);
                 }
@@ -381,10 +412,19 @@ impl Recorder {
     }
 }
 
-fn remux(ffmpeg_path: &PathBuf, input: &Path, output: &Path) -> Result<(), String> {
-    let args: Vec<String> = vec![
+/// MPEG-TS -> MP4 without re-encoding, naming the audio tracks (TS can't carry the names).
+fn remux(ffmpeg_path: &PathBuf, input: &Path, output: &Path, tracks: &[String]) -> Result<(), String> {
+    let mut args: Vec<String> = vec![
         "-i".into(), input.to_string_lossy().into(), "-map".into(), "0".into(), "-c".into(), "copy".into(),
-        "-movflags".into(), "+faststart".into(), "-y".into(), output.to_string_lossy().into(),
     ];
+    for (i, name) in tracks.iter().enumerate() {
+        args.extend([format!("-metadata:s:a:{i}"), format!("handler_name={name}")]);
+        args.extend([format!("-metadata:s:a:{i}"), format!("title={name}")]);
+    }
+    // Only the full mix plays by default (what Discord and players use).
+    for i in 0..tracks.len() {
+        args.extend([format!("-disposition:a:{i}"), if i == 0 { "default".into() } else { "0".into() }]);
+    }
+    args.extend(["-movflags".into(), "+faststart".into(), "-y".into(), output.to_string_lossy().into()]);
     ffmpeg::test(ffmpeg_path, &args)
 }

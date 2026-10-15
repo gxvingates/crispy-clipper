@@ -28,17 +28,36 @@ max_bitrate_mbps = 50
 encoder = "auto"
 show_cursor = true
 
-# Audio sources mixed into clips. id is one of:
-#   "all-outputs"    everything I hear: every channel of the audio device you listen through
-#                    (all channels of mixers like BEACN, GoXLR, Wave Link; just the speakers otherwise)
-#   "default-output" whatever Windows' default output is
-#   "default-input"  Windows' default microphone
-#   "game"           only the detected game's own sound
-#   or a specific device id (pick devices in the app's Settings).
-audio_sources = [
-  { id = "all-outputs", name = "Everything I hear", volume = 1.0 },
-  { id = "default-input", name = "Microphone", volume = 1.0 },
-]
+# Audio works like Medal's:
+#   "split" = record specific programs (default): the game's own sound, Discord and any apps you add.
+#             Music or videos you play elsewhere are left out, whatever output device they use.
+#   "all"   = record whole output devices ("auto" = Windows' default output).
+audio_mode = "split"
+game_audio = true
+game_volume = 100
+discord_audio = true
+discord_volume = 100
+# Extra programs to record in "split" mode, e.g. [{ exe = "spotify.exe", volume = 60 }]
+extra_apps = []
+pc_audio_devices = ["auto"]
+pc_volume = 100
+
+mic_enabled = true
+# "auto" = Windows' default microphone, or a device id (pick it in Settings).
+mic_device = "auto"
+mic_volume = 100
+# Use the louder channel / average to mono (fixes mics that only come in on the left).
+mic_mono = true
+mic_noise_suppression = false
+# Evens out your voice level automatically (quiet mics come up to a normal speaking level).
+mic_auto_level = true
+mic_noise_gate = false
+mic_noise_gate_db = -45
+push_to_talk = false
+push_to_talk_key = ""
+
+# Save game, mic and Discord as separate tracks next to the full mix (rebalance them later in the editor).
+multiple_audio_tracks = true
 
 notify_overlay = true
 notify_sound = true
@@ -59,15 +78,13 @@ ignored_apps = ["explorer.exe", "chrome.exe", "msedge.exe", "firefox.exe", "brav
 ffmpeg = "ffmpeg"
 "#;
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct AudioSource {
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    pub volume: f32,
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct ExtraApp {
+    pub exe: String,
+    pub volume: u32,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct Config {
     pub capture_mode: String,
     pub clip_seconds: u32,
@@ -83,7 +100,25 @@ pub struct Config {
     pub max_bitrate_mbps: u32,
     pub encoder: String,
     pub show_cursor: bool,
-    pub audio_sources: Vec<AudioSource>,
+    pub audio_mode: String,
+    pub game_audio: bool,
+    pub game_volume: u32,
+    pub discord_audio: bool,
+    pub discord_volume: u32,
+    pub extra_apps: Vec<ExtraApp>,
+    pub pc_audio_devices: Vec<String>,
+    pub pc_volume: u32,
+    pub mic_enabled: bool,
+    pub mic_device: String,
+    pub mic_volume: u32,
+    pub mic_mono: bool,
+    pub mic_noise_suppression: bool,
+    pub mic_auto_level: bool,
+    pub mic_noise_gate: bool,
+    pub mic_noise_gate_db: i32,
+    pub push_to_talk: bool,
+    pub push_to_talk_key: String,
+    pub multiple_audio_tracks: bool,
     pub notify_overlay: bool,
     pub notify_sound: bool,
     pub start_with_windows: bool,
@@ -145,6 +180,22 @@ impl Config {
         }
     }
 
+    /// True when `other` differs from `self` only in volumes, which the recorder applies live
+    /// (like Medal) instead of restarting.
+    pub fn only_volumes_differ(&self, other: &Config) -> bool {
+        let mut a = self.clone();
+        a.game_volume = other.game_volume;
+        a.discord_volume = other.discord_volume;
+        a.pc_volume = other.pc_volume;
+        a.mic_volume = other.mic_volume;
+        if a.extra_apps.len() == other.extra_apps.len() {
+            for (x, y) in a.extra_apps.iter_mut().zip(&other.extra_apps) {
+                x.volume = y.volume;
+            }
+        }
+        a == *other
+    }
+
     /// Output height for `resolution`, or None for native.
     pub fn target_height(&self) -> Option<u32> {
         match self.resolution.as_str() {
@@ -154,5 +205,20 @@ impl Config {
             "720p" => Some(720),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn save_roundtrip() {
+        let c = super::Config::parse("").unwrap();
+        let back = super::Config::parse(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        let mut louder = c.clone();
+        louder.mic_volume = 250;
+        assert!(c.only_volumes_differ(&louder));
+        louder.mic_mono = !louder.mic_mono;
+        assert!(!c.only_volumes_differ(&louder));
     }
 }

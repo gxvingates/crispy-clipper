@@ -8,6 +8,8 @@ pub struct Info {
     pub seconds: f64,
     pub width: u32,
     pub height: u32,
+    /// Names of the audio tracks in order (from each track's handler name).
+    pub audio_tracks: Vec<String>,
 }
 
 fn be32(b: &[u8]) -> u32 {
@@ -71,7 +73,7 @@ pub fn info(path: &Path) -> Option<Info> {
         pos += size;
     };
 
-    let mut out = Info { seconds: 0.0, width: 0, height: 0 };
+    let mut out = Info { seconds: 0.0, width: 0, height: 0, audio_tracks: Vec::new() };
     for (kind, body) in boxes(&moov) {
         if kind == b"mvhd" {
             let v1 = body[0] == 1;
@@ -92,6 +94,15 @@ pub fn info(path: &Path) -> Option<Info> {
                         if w > 0 && out.width == 0 {
                             out.width = w;
                             out.height = h;
+                        }
+                    }
+                }
+                if k == b"mdia" {
+                    for (k2, hdlr) in boxes(tkhd) {
+                        // hdlr: version/flags, pre_defined, handler_type, 12 reserved bytes, name.
+                        if k2 == b"hdlr" && hdlr.len() >= 24 && &hdlr[8..12] == b"soun" {
+                            let name = String::from_utf8_lossy(&hdlr[24..]).trim_matches(char::from(0)).trim().to_string();
+                            out.audio_tracks.push(name);
                         }
                     }
                 }

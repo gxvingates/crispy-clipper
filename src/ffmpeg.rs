@@ -9,9 +9,9 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Minimal FFmpeg built by this repo's CI (only what Crispy Clipper uses).
 pub const DOWNLOAD_URL: &str =
-    "https://github.com/gxvingates/crispy-clipper/releases/download/ffmpeg-min-2/ffmpeg.exe";
+    "https://github.com/gxvingates/crispy-clipper/releases/download/ffmpeg-min-3/ffmpeg.exe";
 /// Bump with DOWNLOAD_URL when the build gains components the app needs.
-pub const MANAGED_VERSION: &str = "2";
+pub const MANAGED_VERSION: &str = "3";
 
 fn version_marker() -> PathBuf {
     config::data_dir().join("ffmpeg.version")
