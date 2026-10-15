@@ -440,7 +440,12 @@ async function load() {
   try {
     const r = await call('list'); const sig = JSON.stringify(r.items);
     if (sig !== load.sig) { load.sig = sig; items = r.items; render(); }
-    if (location.hash === '#editor' && !load.opened && items.find(i => i.kind === 'clip')) { load.opened = 1; openEditor(items.find(i => i.kind === 'clip')); }
+    // Dev hooks: #editor opens the newest clip, #editor-single the newest single-track clip.
+    if (location.hash.startsWith('#editor') && !load.opened) {
+      const single = location.hash === '#editor-single';
+      const c = items.find(i => i.kind === 'clip' && (!single || (i.tracks || []).length < 2));
+      if (c) { load.opened = 1; openEditor(c); }
+    }
   } catch (e) { toast(e, true); }
 }
 function render() {
@@ -545,6 +550,8 @@ function setupMixer(i) {
   masterGain.gain.value = vid.volume;
   t.slice(1).forEach((_, k) => {
     const a = new Audio(trackUrl(i.path, k + 1, i.mtime)); a.preload = 'auto';
+    // If a track can't load, fall back to the clip's own full mix rather than silence.
+    a.onerror = () => { if (vid && cur === i) { teardownMixer(); vid.muted = false; toast('Separate tracks unavailable for this clip; playing the full mix', true); } };
     const g = actx.createGain(); actx.createMediaElementSource(a).connect(g).connect(masterGain);
     trackEls.push(a); gains.push(g);
   });

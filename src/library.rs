@@ -68,10 +68,15 @@ pub fn run(view: Option<String>) {
         .with_background_color((17, 17, 21, 255))
         .with_devtools(cfg!(debug_assertions))
         .with_browser_accelerator_keys(false)
+        .with_autoplay(true)
         // Lean WebView2: no background services, one renderer, GPU kept for video decoding.
-        .with_additional_browser_args(
-            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,             AutofillServerCommunication,MediaRouter,OptimizationHints,Translate              --disable-background-networking --disable-component-update --disable-extensions --disable-sync              --no-pings --no-first-run --renderer-process-limit=1 --in-process-gpu --js-flags=--max-old-space-size=96",
-        )
+        .with_additional_browser_args(concat!(
+            "--autoplay-policy=no-user-gesture-required ",
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,",
+            "AutofillServerCommunication,MediaRouter,OptimizationHints,Translate ",
+            "--disable-background-networking --disable-component-update --disable-extensions --disable-sync ",
+            "--no-pings --no-first-run --renderer-process-limit=1 --in-process-gpu --js-flags=--max-old-space-size=96",
+        ))
         .with_asynchronous_custom_protocol("app".into(), |_id, req, responder| {
             std::thread::spawn(move || responder.respond(serve(&req)));
         })
@@ -300,7 +305,7 @@ fn audio_track(path: &Path, track: u32) -> Option<PathBuf> {
         let _ = ffmpeg::command(&ff)
             .arg("-i")
             .arg(path)
-            .args(["-map", &format!("0:a:{track}"), "-c", "copy", "-vn", "-y"])
+            .args(["-map", &format!("0:a:{track}"), "-c", "copy", "-vn", "-f", "mp4", "-y"])
             .arg(&out)
             .status();
     }
