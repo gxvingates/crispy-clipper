@@ -734,29 +734,31 @@ const srcRow = (ico, name, hint, control) => `<div class="row"><div class="src-i
 const dim = on => on ? '' : ' style="opacity:.45;pointer-events:none"';
 const withToggle = (inner, k) => `<div style="display:flex;align-items:center;gap:14px"><span${dim(cfg[k])}>${inner}</span>${sw(k)}</div>`;
 
-// One row per device: switch it on to record it, with its own volume. Selected devices come first.
+// Picked devices are listed (volume + remove); everything else is in an "Add…" dropdown.
 function deviceRows(kind) {
   const key = kind === 'out' ? 'audio_outputs' : 'audio_inputs';
   const list = kind === 'out' ? devices.outputs : devices.inputs;
   const sel = cfg[key] || [];
-  const auto = kind === 'out' ? ['auto', 'Default output', 'Follows your Windows default output'] : ['auto', 'Default microphone', 'Follows your Windows default microphone'];
-  let all = [auto, ...list.map(d => [d.id, d.name, d.interface || ''])];
-  // Devices you picked that aren't connected right now still show (and stay picked).
-  sel.forEach(d => { if (!all.some(a => a[0] === d.id)) all.push([d.id, d.name || 'Unknown device', 'Not connected right now']); });
-  const isOn = id => sel.some(d => d.id === id);
-  all.sort((a, b) => isOn(b[0]) - isOn(a[0]));
-  const ico = kind === 'out' ? 'speaker' : 'mic';
-  return all.map(([id, name, hint]) => {
-    const on = isOn(id), d = sel.find(x => x.id === id);
-    const v = d ? d.volume : 100, max = kind === 'in' ? 300 : 200;
-    return `<div class="row"><div class="src-ico">${icon(ico)}</div><div class="lbl"><b>${esc(name.split(' (')[0] || name)}</b>${hint ? `<small>${esc(hint)}</small>` : ''}</div>
-      <div style="display:flex;align-items:center;gap:14px"><span${dim(on)}><div class="range-wrap" style="width:240px"><input type="range" min="0" max="${max}" step="5" value="${v}" data-dvol="${kind}" data-id="${esc(id)}"><output style="width:46px">${v}%</output></div></span>
-      <label class="switch"><input type="checkbox" data-dsel="${kind}" data-id="${esc(id)}" data-name="${esc(name)}" ${on ? 'checked' : ''}><span></span></label></div></div>`;
-  }).join('');
+  const autoName = kind === 'out' ? 'Default output' : 'Default microphone';
+  const short = n => n.split(' (')[0] || n;
+  const info = d => {
+    if (d.id === 'auto') return [autoName, kind === 'out' ? 'Follows your Windows default output' : 'Follows your Windows default microphone'];
+    const live = list.find(x => x.id === d.id);
+    return live ? [short(live.name), live.interface || ''] : [short(d.name || 'Unknown device'), 'Not connected right now'];
+  };
+  const ico = kind === 'out' ? 'speaker' : 'mic', max = kind === 'in' ? 300 : 200;
+  const rows = sel.map(d => {
+    const [name, hint] = info(d);
+    return `<div class="row"><div class="src-ico">${icon(ico)}</div><div class="lbl"><b>${esc(name)}</b>${hint ? `<small>${esc(hint)}</small>` : ''}</div>
+      <div style="display:flex;align-items:center;gap:6px"><div class="range-wrap" style="width:240px"><input type="range" min="0" max="${max}" step="5" value="${d.volume}" data-dvol="${kind}" data-id="${esc(d.id)}"><output style="width:46px">${d.volume}%</output></div>
+      <button class="btn icon-btn ghost" data-drm="${kind}" data-id="${esc(d.id)}" title="Stop recording this">${icon('x')}</button></div></div>`;
+  }).join('') || row(kind === 'out' ? 'No outputs' : 'No microphones', kind === 'out' ? 'Clips will have no game or PC sound' : 'Your voice won\'t be recorded', '');
+  const opts = [['auto', autoName], ...list.map(d => [d.id, d.name])].filter(([id]) => !sel.some(x => x.id === id));
+  const add = `<select class="field" data-dadd="${kind}"><option value="">${kind === 'out' ? 'Add an output…' : 'Add a microphone…'}</option>${opts.map(([id, n]) => `<option value="${esc(id)}">${esc(n)}</option>`).join('')}</select>`;
+  return rows + srcRow('plus', kind === 'out' ? 'Add output' : 'Add microphone', kind === 'out' ? 'With a mixer like BEACN or GoXLR, add the channels your game and chat play on' : '', add);
 }
 function audioHtml() {
-  return `<div class="row"><div class="lbl"><b>Outputs</b><small>Switch on everything you want in clips. With a mixer like BEACN or GoXLR, pick the channels your game and chat play on. Each one gets its own volume and its own track</small></div></div>`
-    + deviceRows('out')
+  return deviceRows('out')
     + row('Separate audio tracks', 'Saves every device as its own track next to the full mix, so you can rebalance them in the editor afterwards', sw('multiple_audio_tracks'));
 }
 function micHtml() {
@@ -784,7 +786,7 @@ function renderSettings() {
     ${row('Encoder', 'Auto picks your NVIDIA, AMD or Intel GPU', pick('encoder', [['auto', 'Auto (recommended)'], ['h264_nvenc', 'NVIDIA · H.264'], ['hevc_nvenc', 'NVIDIA · HEVC'], ['av1_nvenc', 'NVIDIA · AV1'], ['h264_amf', 'AMD · H.264'], ['hevc_amf', 'AMD · HEVC'], ['av1_amf', 'AMD · AV1'], ['h264_qsv', 'Intel · H.264'], ['hevc_qsv', 'Intel · HEVC'], ['h264_mf', 'Windows (any GPU)'], ['libx264', 'CPU (slow)']]))}
     ${row('Monitor', '', pick('monitor', [[-1, 'Where the game is'], [0, 'Monitor 1'], [1, 'Monitor 2'], [2, 'Monitor 3']]))}
     ${row('Show mouse cursor', '', sw('show_cursor'))}`)}
-  ${section('speaker', 'Audio', 'What ends up in your clips', audioHtml())}
+  ${section('speaker', 'Audio outputs', 'What you hear that should end up in clips. Each output gets its own volume and track', audioHtml())}
   ${section('mic', 'Microphones', 'Inputs to record, and how your voice is processed', micHtml())}
   ${section('keyboard', 'Hotkeys', 'Click a shortcut, then press the keys you want', `
     ${row('Save clip', `Saves the last ${cfg.clip_seconds} seconds`, hotkey('clip_hotkey'))}
@@ -815,16 +817,6 @@ function changed(rerender) {
 const RERENDER = new Set(['mic_noise_gate', 'push_to_talk', 'clip_seconds', 'max_bitrate_mbps']);
 $('sform').addEventListener('input', e => {
   const el = e.target;
-  if (el.dataset.dsel) {
-    const key = el.dataset.dsel === 'out' ? 'audio_outputs' : 'audio_inputs';
-    const id = el.dataset.id;
-    cfg[key] = (cfg[key] || []).filter(d => d.id !== id);
-    if (el.checked) {
-      const v = +el.closest('.row').querySelector('[data-dvol]').value;
-      cfg[key].push({ id, name: el.dataset.name, volume: v });
-    }
-    return changed(true);
-  }
   if (el.dataset.dvol) {
     const key = el.dataset.dvol === 'out' ? 'audio_outputs' : 'audio_inputs';
     const d = (cfg[key] || []).find(x => x.id === el.dataset.id);
@@ -843,11 +835,20 @@ $('sform').addEventListener('input', e => {
   changed(el.type === 'checkbox' && RERENDER.has(k));
 });
 $('sform').addEventListener('change', e => {
+  const add = e.target.dataset.dadd;
+  if (add && e.target.value) {
+    const key = add === 'out' ? 'audio_outputs' : 'audio_inputs';
+    const id = e.target.value, name = e.target.selectedOptions[0].textContent;
+    cfg[key] = [...(cfg[key] || []), { id, name, volume: 100 }];
+    return changed(true);
+  }
   if (e.target.tagName === 'SELECT' && RERENDER.has(e.target.dataset.k)) changed(true);
 });
 $('sform').addEventListener('click', e => {
   const b = e.target.closest('[data-v]'); const segEl = b?.closest('[data-seg]');
   if (segEl) { const k = segEl.dataset.seg; cfg[k] = typeof saved[k] === 'number' ? +b.dataset.v : b.dataset.v; segEl.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); return changed(RERENDER.has(k)); }
+  const rm = e.target.closest('[data-drm]');
+  if (rm) { const key = rm.dataset.drm === 'out' ? 'audio_outputs' : 'audio_inputs'; cfg[key] = cfg[key].filter(d => d.id !== rm.dataset.id); return changed(true); }
   const h = e.target.closest('[data-hk]'); if (h && !h.classList.contains('listening')) { h.classList.add('listening'); h.textContent = h.dataset.mouse ? 'Press a key or mouse button…' : 'Press keys… (Esc cancels, Backspace clears)'; h.focus(); }
 });
 $('sform').addEventListener('mousedown', e => {
