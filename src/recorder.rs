@@ -228,6 +228,9 @@ impl Recorder {
             .stderr(Stdio::piped());
         let mut child = cmd.spawn()?;
 
+        // Audio timestamps count from here, video from FFmpeg's first captured frame,
+        // which comes later (encoder start-up). The gap is measured below and removed on save.
+        let started = Instant::now();
         let stdin = child.stdin.take().unwrap();
         let me = self.clone();
         thread::spawn(move || me.mixer.pump(stdin));
@@ -242,7 +245,13 @@ impl Recorder {
         thread::spawn(move || {
             let mut buf = vec![0u8; 188 * 512];
             while let Ok(n @ 1..) = out.read(&mut buf) {
-                me.ring.lock().unwrap().push(&buf[..n]);
+                let mut ring = me.ring.lock().unwrap();
+                ring.push(&buf[..n]);
+                if ring.has_video && ring.av_offset.is_none() {
+                    let gap = started.elapsed().as_secs_f64() + AV_LATENCY_FIX;
+                    eprintln!("[recorder] audio/video offset {:.0} ms", gap * 1000.0);
+                    ring.av_offset = Some(gap);
+                }
             }
         });
         Ok(child)
@@ -334,7 +343,11 @@ impl Recorder {
     }
 
     fn cut(&self, secs: u32) -> Result<PathBuf, String> {
-        let data = self.ring.lock().unwrap().snapshot(secs).ok_or(if self.wanted() {
+        let (data, offset) = {
+            let ring = self.ring.lock().unwrap();
+            (ring.snapshot(secs), ring.av_offset.unwrap_or(0.0))
+        };
+        let data = data.ok_or(if self.wanted() {
             "Nothing buffered yet"
         } else {
             "Not capturing: no game detected (switch Capture to \"Always\" in settings to clip the desktop)"
@@ -345,7 +358,7 @@ impl Recorder {
         let ts = dir.join(format!(".clip {stamp}.ts"));
         std::fs::write(&ts, data).map_err(|e| e.to_string())?;
         let mp4 = dir.join(format!("Clip {stamp}.mp4"));
-        let res = remux(&self.ffmpeg, &ts, &mp4, &self.mixer.tracks);
+        let res = remux(&self.ffmpeg, &ts, &mp4, &self.mixer.tracks, offset);
         let _ = std::fs::remove_file(&ts);
         res.map(|_| mp4)
     }
@@ -354,13 +367,17 @@ impl Recorder {
         let mut rec = self.recording.lock().unwrap();
         if let Some(ts) = rec.take() {
             drop(rec);
-            let _ = self.ring.lock().unwrap().stop_recording();
+            let offset = {
+                let mut ring = self.ring.lock().unwrap();
+                let _ = ring.stop_recording();
+                ring.av_offset.unwrap_or(0.0)
+            };
             let me = self.clone();
             thread::spawn(move || {
                 let mp4 = ts.with_file_name(
                     ts.file_name().unwrap().to_string_lossy().trim_start_matches('.').replace(".ts", ".mp4"),
                 );
-                let res = remux(&me.ffmpeg, &ts, &mp4, &me.mixer.tracks);
+                let res = remux(&me.ffmpeg, &ts, &mp4, &me.mixer.tracks, offset);
                 if res.is_ok() {
                     let _ = std::fs::remove_file(&ts);
                 }
@@ -413,10 +430,22 @@ impl Recorder {
 }
 
 /// MPEG-TS -> MP4 without re-encoding, naming the audio tracks (TS can't carry the names).
-fn remux(ffmpeg_path: &PathBuf, input: &Path, output: &Path, tracks: &[String]) -> Result<(), String> {
-    let mut args: Vec<String> = vec![
-        "-i".into(), input.to_string_lossy().into(), "-map".into(), "0".into(), "-c".into(), "copy".into(),
-    ];
+/// Net audio-vs-video latency besides FFmpeg's start-up gap, in seconds: audio waits in the
+/// mixer's 40 ms jitter buffer (+~10 ms WASAPI polling); video spends ~2 frames in the encoder.
+const AV_LATENCY_FIX: f64 = 0.050 - 0.033;
+
+/// MPEG-TS -> MP4 without re-encoding, naming the audio tracks (TS can't carry the names) and
+/// pulling the audio `av_offset` seconds earlier so it lines up with the video.
+fn remux(ffmpeg_path: &PathBuf, input: &Path, output: &Path, tracks: &[String], av_offset: f64) -> Result<(), String> {
+    let src = input.to_string_lossy().to_string();
+    let mut args: Vec<String> = vec!["-i".into(), src.clone()];
+    if av_offset > 0.001 {
+        args.extend(["-itsoffset".into(), format!("{:.3}", -av_offset), "-i".into(), src]);
+        args.extend(["-map".into(), "0:v".into(), "-map".into(), "1:a".into()]);
+    } else {
+        args.extend(["-map".into(), "0".into()]);
+    }
+    args.extend(["-c".into(), "copy".into()]);
     for (i, name) in tracks.iter().enumerate() {
         args.extend([format!("-metadata:s:a:{i}"), format!("handler_name={name}")]);
         args.extend([format!("-metadata:s:a:{i}"), format!("title={name}")]);

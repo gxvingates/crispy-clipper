@@ -21,6 +21,10 @@ pub struct Ring {
     keep: Duration,
     /// Full-session recording: every packet is also appended here.
     tee: Option<BufWriter<File>>,
+    /// A video packet has arrived in this FFmpeg session.
+    pub has_video: bool,
+    /// How many seconds the audio runs behind the video in this session (measured).
+    pub av_offset: Option<f64>,
 }
 
 impl Ring {
@@ -34,6 +38,8 @@ impl Ring {
             carry: Vec::new(),
             keep,
             tee: None,
+            has_video: false,
+            av_offset: None,
         }
     }
 
@@ -79,7 +85,10 @@ impl Ring {
                 self.pat = Some(p.try_into().unwrap());
             } else if pid == PMT_PID {
                 self.pmt = Some(p.try_into().unwrap());
-            } else if pid == VIDEO_PID && pusi && has_af && p[4] > 0 && p[5] & 0x40 != 0 {
+            } else if pid == VIDEO_PID && !self.has_video {
+                self.has_video = true;
+            }
+            if pid == VIDEO_PID && pusi && has_af && p[4] > 0 && p[5] & 0x40 != 0 {
                 // random_access_indicator: FFmpeg sets it on keyframes.
                 self.keys.push_back((now, self.base + self.data.len() as u64));
             }

@@ -531,31 +531,38 @@ async function copyFile(path) { try { await call('copyFile', { path }); toast('C
 
 // ---------- editor ----------
 let cur = null, vid = null, tIn = 0, tOut = 0;
-// Track mixer (clips recorded with separate tracks): preview each track through Web Audio.
-let actx = null, masterGain = null, trackEls = [], gains = [], mixVals = [], muted = [];
+// Track mixer (clips recorded with separate tracks). Each track is decoded into memory and
+// scheduled sample-accurately against the video's position (with output latency compensated),
+// so the preview stays in sync; until the tracks are ready the video's own full mix plays.
+let actx = null, masterGain = null, buffers = [], gains = [], sources = [], mixVals = [], muted = [], mixReady = false;
+let playStartCtx = 0, playStartPos = 0;
 const trackUrl = (p, i, m) => '/track?path=' + enc(p) + '&i=' + i + '&m=' + m;
 const mixChanged = () => mixVals.some((v, i) => muted[i] || Math.abs(v - 1) > 0.01);
 const mixOut = () => mixVals.map((v, i) => muted[i] ? 0 : v);
+function stopSources() { sources.forEach(sn => { try { sn.stop(); } catch { } }); sources = []; }
 function teardownMixer() {
-  trackEls.forEach(a => { a.pause(); a.removeAttribute('src'); a.load(); });
-  if (actx) actx.close(); actx = masterGain = null; trackEls = []; gains = []; mixVals = []; muted = [];
+  stopSources();
+  if (actx) actx.close(); actx = masterGain = null; buffers = []; gains = []; mixVals = []; muted = []; mixReady = false;
   $('mixer').classList.add('hidden'); $('mixer').innerHTML = '';
 }
 function setupMixer(i) {
   teardownMixer();
   const t = i.tracks || [];
-  if (t.length < 2 || !vid) return;
+  // Long recordings would need too much memory to decode; they play the full mix.
+  if (t.length < 2 || !vid || (i.duration || 0) > 600) return;
   mixVals = t.slice(1).map(() => 1); muted = t.slice(1).map(() => false);
-  actx = new AudioContext(); masterGain = actx.createGain(); masterGain.connect(actx.destination);
-  masterGain.gain.value = vid.volume;
-  t.slice(1).forEach((_, k) => {
-    const a = new Audio(trackUrl(i.path, k + 1, i.mtime)); a.preload = 'auto';
-    // If a track can't load, fall back to the clip's own full mix rather than silence.
-    a.onerror = () => { if (vid && cur === i) { teardownMixer(); vid.muted = false; toast('Separate tracks unavailable for this clip; playing the full mix', true); } };
-    const g = actx.createGain(); actx.createMediaElementSource(a).connect(g).connect(masterGain);
-    trackEls.push(a); gains.push(g);
-  });
-  vid.muted = true; // the video's own (full-mix) audio is replaced by the live mix
+  actx = new AudioContext({ latencyHint: 'interactive' });
+  masterGain = actx.createGain(); masterGain.connect(actx.destination); masterGain.gain.value = vid.volume;
+  gains = t.slice(1).map(() => { const g = actx.createGain(); g.connect(masterGain); return g; });
+  const ctx = actx;
+  Promise.all(t.slice(1).map((_, k) => fetch(trackUrl(i.path, k + 1, i.mtime)).then(r => { if (!r.ok) throw new Error('track'); return r.arrayBuffer(); }).then(b => ctx.decodeAudioData(b))))
+    .then(bufs => {
+      if (ctx !== actx || cur !== i) return;
+      buffers = bufs; mixReady = true;
+      vid.muted = true; // the live mix replaces the video's own full-mix audio
+      if (!vid.paused) startSources();
+    })
+    .catch(() => { if (ctx === actx && cur === i) { teardownMixer(); toast('Separate tracks unavailable for this clip; playing the full mix', true); } });
   const ico = n => /mic/i.test(n) ? 'mic' : /game|pc/i.test(n) ? 'gamepad' : 'speaker';
   $('mixer').innerHTML = `<div class="mlabel">${icon('layers')}Audio mix</div>` + t.slice(1).map((n, k) => `<div class="mtrack" data-t="${k}">
       <button data-mute="${k}" title="Mute">${icon(ico(n))}</button><span class="nm" title="${esc(n)}">${esc(n || 'Track ' + (k + 1))}</span>
@@ -563,6 +570,22 @@ function setupMixer(i) {
     + `<button class="btn sm ghost" onclick="resetMix()">Reset</button>`;
   $('mixer').querySelectorAll('input[type=range]').forEach(setRangeFill);
   $('mixer').classList.remove('hidden');
+}
+// Start every track at the video's current position. Audio is heard `latency` seconds after it
+// is scheduled, so start that much further in to line up with the frame on screen.
+function startSources() {
+  if (!mixReady || !actx || !vid) return;
+  stopSources();
+  actx.resume();
+  const latency = (actx.baseLatency || 0) + (actx.outputLatency || 0);
+  const when = actx.currentTime + 0.02;
+  const pos = vid.currentTime + latency + 0.02;
+  buffers.forEach((b, k) => {
+    if (pos >= b.duration) return;
+    const sn = actx.createBufferSource(); sn.buffer = b; sn.connect(gains[k]); sn.start(when, Math.max(0, pos));
+    sources.push(sn);
+  });
+  playStartCtx = when; playStartPos = pos - latency - 0.02;
 }
 function applyGains() { gains.forEach((g, k) => g.gain.value = muted[k] ? 0 : mixVals[k]); }
 function resetMix() {
@@ -572,12 +595,13 @@ function resetMix() {
 }
 $('mixer').addEventListener('input', e => { const k = e.target.dataset.mix; if (k === undefined) return; mixVals[k] = +e.target.value; setRangeFill(e.target); e.target.nextElementSibling.textContent = Math.round(mixVals[k] * 100) + '%'; applyGains(); });
 $('mixer').addEventListener('click', e => { const b = e.target.closest('[data-mute]'); if (!b) return; const k = +b.dataset.mute; muted[k] = !muted[k]; b.closest('.mtrack').classList.toggle('muted', muted[k]); applyGains(); });
+// Called on play/pause/seek (force) and on every timeupdate (drift check).
 function syncTracks(force) {
-  if (!actx || !vid) return;
-  trackEls.forEach(a => {
-    if (force || Math.abs(a.currentTime - vid.currentTime) > 0.12) a.currentTime = vid.currentTime;
-    if (vid.paused && !a.paused) a.pause(); else if (!vid.paused && a.paused) a.play().catch(() => { });
-  });
+  if (!mixReady || !actx || !vid) return;
+  if (vid.paused) { stopSources(); return; }
+  if (force || !sources.length) return startSources();
+  const audioPos = playStartPos + (actx.currentTime - playStartCtx);
+  if (Math.abs(audioPos - vid.currentTime) > 0.04) startSources();
 }
 function openEditor(i) {
   stopPreview(); cur = i; $('edName').value = i.name; $('compressMenu').classList.add('hidden');
@@ -603,6 +627,9 @@ function openEditor(i) {
   vid.ontimeupdate = () => { if (!vid.paused && tOut < vid.duration - 0.05 && vid.currentTime >= tOut) vid.currentTime = tIn; drawTL(); syncTracks(); };
   vid.onplay = vid.onpause = () => { actx?.resume(); syncTracks(true); pl.classList.toggle('is-playing', !vid.paused); $('playBtn').innerHTML = icon(vid.paused ? 'play' : 'pause'); };
   vid.onseeked = () => syncTracks(true);
+  // 'play' fires before frames actually move; start the tracks when playback really begins.
+  vid.onplaying = () => syncTracks(true);
+  vid.onwaiting = () => stopSources();
   $('tl').style.backgroundImage = `url("${strip(i.path, i.mtime)}")`;
 }
 function closeEditor() { teardownMixer(); if (vid) { vid.pause(); vid.removeAttribute('src'); vid.load(); } $('player').innerHTML = ''; $('editor').classList.add('hidden'); cur = vid = null; }
